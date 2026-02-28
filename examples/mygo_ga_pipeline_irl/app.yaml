@@ -1,0 +1,7 @@
+id: mygo_ga_pipeline_irl
+name: MyGo GA Pipeline IRL
+name[zh]: MyGo 识别管线GA实机训练
+author: harekasa
+desc: Example using mygo_target_tracking pipeline and genetic algorithm
+desc[zh]: 调用识别管线采样并使用遗传算法搜索PID参数
+version: 1.0.0
