@@ -61,6 +61,19 @@ struct TrackerConfig {
     int pixels_threshold = 0;
     bool merge_blobs = false;
     int merge_margin = 0;
+
+    // 激光红点检测参数
+    bool enable_laser_detection = true;
+    int laser_hue_low_1 = 0;
+    int laser_hue_high_1 = 12;
+    int laser_hue_low_2 = 168;
+    int laser_hue_high_2 = 179;
+    int laser_min_saturation = 120;
+    int laser_min_value = 120;
+    int laser_min_blob_area = 3;
+    int laser_max_blob_area = 2000;
+    int laser_search_radius = 220;
+    float laser_circularity_weight = 0.25f;
 };
 
 // 色块信息结构体
@@ -82,6 +95,9 @@ struct TargetInfo {
     cv::Point2f target_center;        // 目标色块中心
     float distance = 0.0f;            // 距离（像素）
     float angle = 0.0f;               // 角度（度）
+    bool laser_found = false;         // 是否找到激光红点
+    cv::Point2f laser_center{-1.0f, -1.0f}; // 激光红点中心
+    float laser_to_target_distance = 0.0f;  // 激光到目标像素距离
 };
 
 // 主跟踪器类
@@ -141,6 +157,8 @@ private:
     bool has_previous_target_;
     cv::Point2f last_target_position_;
     cv::Point2f last_board_position_;
+    bool has_previous_laser_ = false;
+    cv::Point2f last_laser_position_{-1.0f, -1.0f};
     bool debug_enabled_;
     bool roi_tracking_active_ = false;
     cv::Scalar target_color_bgr_;
@@ -160,6 +178,10 @@ private:
     bool init_roi_tracking(const cv::Mat& frame, const ColorBlob& target_blob);
     bool update_roi_tracking(const cv::Mat& frame, TargetInfo& result);
     bool detect_target_in_roi(const cv::Mat& frame, const cv::Rect& roi, cv::Point2f& out_center) const;
+    bool detect_laser_dot(const cv::Mat& frame,
+                          const cv::Point2f& target_hint,
+                          cv::Point2f& out_center,
+                          cv::Mat* out_mask = nullptr);
 };
 
 #endif // TARGET_TRACKER_HPP

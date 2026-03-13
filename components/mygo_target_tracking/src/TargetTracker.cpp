@@ -38,6 +38,7 @@ TrackerConfig TargetTracker::get_config() const {
 TargetInfo TargetTracker::process_frame(const Mat& frame) {
     TargetInfo result;
     result.found = false;
+    result.laser_found = false;
     frames_processed_++;
     
     // 更新帧大小
@@ -55,100 +56,125 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
         cout << "Frame size: " << frame.cols << "x" << frame.rows << endl;
     }
 
+    bool target_ready = false;
     if (roi_tracking_active_) {
         if (update_roi_tracking(frame, result)) {
+            target_ready = result.found;
+        } else {
+            roi_tracking_active_ = false;
+        }
+    }
+
+    if (!target_ready) {
+    
+        // Step 1: 提取所有色块（不进行颜色匹配过滤！）
+        Mat debug_mask;
+        vector<ColorBlob> blobs = extract_color_blobs(frame, debug_mask);
+    
+        if (config_.print_debug_info) {
+            cout << "Found " << blobs.size() << " color blobs" << endl;
+        }
+    
+        if (blobs.size() < 6) {
+            if (config_.print_debug_info) {
+                cout << "Insufficient blobs (" << blobs.size() << "), need at least 6" << endl;
+            }
             return result;
         }
-        // ROI tracking失败则回退到完整靶面识别
-        roi_tracking_active_ = false;
-    }
     
-    // Step 1: 提取所有色块（不进行颜色匹配过滤！）
-    Mat debug_mask;
-    vector<ColorBlob> blobs = extract_color_blobs(frame, debug_mask);
-    
-    if (config_.print_debug_info) {
-        cout << "Found " << blobs.size() << " color blobs" << endl;
-    }
-    
-    if (blobs.size() < 6) {  // 至少需要6个色块（1个中心 + 5个周围）
-        if (config_.print_debug_info) {
-            cout << "Insufficient blobs (" << blobs.size() << "), need at least 6" << endl;
+        // Step 2: 找到中心色块
+        ColorBlob* center_blob = find_center_blob(blobs);
+        if (center_blob == nullptr) {
+            if (config_.print_debug_info) {
+                cout << "No valid center blob found!" << endl;
+            }
+            return result;
         }
-        return result;
-    }
     
-    // Step 2: 找到中心色块
-    ColorBlob* center_blob = find_center_blob(blobs);
-    if (center_blob == nullptr) {
-        if (config_.print_debug_info) {
-            cout << "No valid center blob found!" << endl;
+           if (config_.print_debug_info) {
+              cout << "Center blob found at (" << center_blob->center.x
+                  << ", " << center_blob->center.y << ")" << endl;
+              cout << "Center color BGR: [" << center_blob->mean_color_bgr[0]
+                  << ", " << center_blob->mean_color_bgr[1]
+                  << ", " << center_blob->mean_color_bgr[2] << "]" << endl;
+              cout << "Center color HSV: [" << center_blob->mean_color_hsv[0]
+                  << ", " << center_blob->mean_color_hsv[1]
+                  << ", " << center_blob->mean_color_hsv[2] << "]" << endl;
+              cout << "Center is dark: " << (center_blob->is_dark ? "YES" : "NO") << endl;
+           }
+    
+        // Step 3: 找到匹配的目标色块
+        ColorBlob* target_blob = find_matching_target(blobs, *center_blob);
+        if (target_blob == nullptr) {
+            if (config_.print_debug_info) {
+                cout << "No matching target blob found!" << endl;
+            }
+            return result;
         }
-        return result;
-    }
     
-    if (config_.print_debug_info) {
-        cout << "Center blob found at (" << center_blob->center.x 
-             << ", " << center_blob->center.y << ")" << endl;
-        cout << "Center color BGR: [" << center_blob->mean_color_bgr[0] 
-             << ", " << center_blob->mean_color_bgr[1] 
-             << ", " << center_blob->mean_color_bgr[2] << "]" << endl;
-        cout << "Center color HSV: [" << center_blob->mean_color_hsv[0] 
-             << ", " << center_blob->mean_color_hsv[1] 
-             << ", " << center_blob->mean_color_hsv[2] << "]" << endl;
-        cout << "Center is dark: " << (center_blob->is_dark ? "YES" : "NO") << endl;
-    }
+        // Step 4: 计算结果
+        result.found = true;
+        result.board_center = center_blob->center;
+        result.target_center = target_blob->center;
+        last_board_position_ = result.board_center;
     
-    // Step 3: 找到匹配的目标色块
-    ColorBlob* target_blob = find_matching_target(blobs, *center_blob);
-    if (target_blob == nullptr) {
+        Point2f delta = target_blob->center - center_blob->center;
+        result.distance = norm(delta);
+        result.angle = atan2(delta.y, delta.x) * 180.0f / CV_PI;
+    
+        successful_tracks_++;
         if (config_.print_debug_info) {
-            cout << "No matching target blob found!" << endl;
+            cout << "SUCCESS: Target found!" << endl;
+            cout << "  Target position: (" << target_blob->center.x
+                 << ", " << target_blob->center.y << ")" << endl;
+            cout << "  Distance: " << result.distance << " pixels" << endl;
+            cout << "  Angle: " << result.angle << " degrees" << endl;
         }
-        return result;
-    }
     
-    // Step 4: 计算结果
-    result.found = true;
-    result.board_center = center_blob->center;
-    result.target_center = target_blob->center;
-    
-    // 计算距离和角度
-    Point2f delta = target_blob->center - center_blob->center;
-    result.distance = norm(delta);
-    result.angle = atan2(delta.y, delta.x) * 180.0 / CV_PI;
-    
-    // 更新统计信息
-    successful_tracks_++;
-    if (config_.print_debug_info) {
-        cout << "SUCCESS: Target found!" << endl;
-        cout << "  Target position: (" << target_blob->center.x 
-             << ", " << target_blob->center.y << ")" << endl;
-        cout << "  Distance: " << result.distance << " pixels" << endl;
-        cout << "  Angle: " << result.angle << " degrees" << endl;
-    }
-    
-    // 初始化ROI跟踪
-    init_roi_tracking(frame, *target_blob);
+        init_roi_tracking(frame, *target_blob);
 
-    // Step 5: 调试显示
-    if (config_.show_debug_windows) {
-        Mat debug_frame = frame.clone();
-        draw_debug_info(debug_frame, blobs, center_blob, target_blob);
-        
-        // 显示中间结果
-        vector<Mat> debug_images;
-        debug_images.push_back(debug_frame);
-        debug_images.push_back(debug_mask);
-        
-        Mat combined;
-        hconcat(debug_images, combined);
-        
-        resize(combined, combined, Size(), 0.5, 0.5);
-        imshow("Target Tracker Debug", combined);
-        waitKey(1);
+        if (config_.show_debug_windows) {
+            Mat debug_frame = frame.clone();
+            draw_debug_info(debug_frame, blobs, center_blob, target_blob);
+
+            vector<Mat> debug_images;
+            debug_images.push_back(debug_frame);
+            debug_images.push_back(debug_mask);
+
+            Mat combined;
+            hconcat(debug_images, combined);
+
+            resize(combined, combined, Size(), 0.5, 0.5);
+            imshow("Target Tracker Debug", combined);
+            waitKey(1);
+        }
     }
-    
+
+    if (result.found && config_.enable_laser_detection) {
+        cv::Point2f laser_center;
+        cv::Mat laser_mask;
+        result.laser_found = detect_laser_dot(frame, result.target_center, laser_center, &laser_mask);
+        if (result.laser_found) {
+            result.laser_center = laser_center;
+            result.laser_to_target_distance = cv::norm(result.target_center - result.laser_center);
+            has_previous_laser_ = true;
+            last_laser_position_ = laser_center;
+        } else {
+            result.laser_center = cv::Point2f(-1.0f, -1.0f);
+            result.laser_to_target_distance = 0.0f;
+        }
+
+        if (config_.show_debug_windows) {
+            cv::Mat laser_vis;
+            cv::cvtColor(laser_mask, laser_vis, cv::COLOR_GRAY2BGR);
+            if (result.laser_found) {
+                cv::circle(laser_vis, result.laser_center, 5, cv::Scalar(0, 255, 255), 2);
+            }
+            imshow("Laser Dot Mask", laser_vis);
+            waitKey(1);
+        }
+    }
+
     return result;
 }
 
@@ -170,8 +196,106 @@ void TargetTracker::reset_roi_tracking() {
     roi_tracking_active_ = false;
     has_previous_target_ = false;
     kalman_initialized_ = false;
+    has_previous_laser_ = false;
     last_target_position_ = cv::Point2f(-1.0f, -1.0f);
     last_board_position_ = cv::Point2f(-1.0f, -1.0f);
+    last_laser_position_ = cv::Point2f(-1.0f, -1.0f);
+}
+
+bool TargetTracker::detect_laser_dot(const cv::Mat& frame,
+                                     const cv::Point2f& target_hint,
+                                     cv::Point2f& out_center,
+                                     cv::Mat* out_mask) {
+    if (frame.empty()) {
+        return false;
+    }
+
+    cv::Mat hsv;
+    cv::cvtColor(frame, hsv, cv::COLOR_BGR2HSV);
+
+    cv::Mat mask1, mask2;
+    cv::inRange(hsv,
+                cv::Scalar(config_.laser_hue_low_1, config_.laser_min_saturation, config_.laser_min_value),
+                cv::Scalar(config_.laser_hue_high_1, 255, 255),
+                mask1);
+    cv::inRange(hsv,
+                cv::Scalar(config_.laser_hue_low_2, config_.laser_min_saturation, config_.laser_min_value),
+                cv::Scalar(config_.laser_hue_high_2, 255, 255),
+                mask2);
+
+    cv::Mat mask = mask1 | mask2;
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
+    cv::morphologyEx(mask, mask, cv::MORPH_DILATE, kernel);
+
+    if (out_mask) {
+        *out_mask = mask;
+    }
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    if (contours.empty()) {
+        return false;
+    }
+
+    bool best_found = false;
+    float best_score = -std::numeric_limits<float>::max();
+    cv::Point2f best_center(-1.0f, -1.0f);
+
+    for (const auto& contour : contours) {
+        const double area = cv::contourArea(contour);
+        if (area < config_.laser_min_blob_area || area > config_.laser_max_blob_area) {
+            continue;
+        }
+
+        const cv::Moments m = cv::moments(contour);
+        if (m.m00 <= 1e-5) {
+            continue;
+        }
+
+        const cv::Point2f center(static_cast<float>(m.m10 / m.m00), static_cast<float>(m.m01 / m.m00));
+        const double perimeter = cv::arcLength(contour, true);
+        const float circularity = (perimeter > 1e-4)
+                                      ? static_cast<float>((4.0 * CV_PI * area) / (perimeter * perimeter))
+                                      : 0.0f;
+
+        cv::Rect br = cv::boundingRect(contour);
+        br &= cv::Rect(0, 0, frame.cols, frame.rows);
+        if (br.width <= 0 || br.height <= 0) {
+            continue;
+        }
+        cv::Mat hsv_roi = hsv(br);
+        std::vector<cv::Mat> hsv_channels;
+        cv::split(hsv_roi, hsv_channels);
+        double max_v = 0.0;
+        cv::minMaxLoc(hsv_channels[2], nullptr, &max_v);
+
+        float score = 0.0f;
+        if (target_hint.x >= 0.0f && target_hint.y >= 0.0f) {
+            const float dist_to_target = cv::norm(center - target_hint);
+            score += 1.6f * std::max(0.0f, 1.0f - dist_to_target / std::max(1, config_.laser_search_radius));
+        }
+        if (has_previous_laser_) {
+            const float dist_to_last = cv::norm(center - last_laser_position_);
+            score += std::max(0.0f, 1.0f - dist_to_last / std::max(1, config_.laser_search_radius));
+        }
+        score += config_.laser_circularity_weight * circularity;
+        score += 0.2f * static_cast<float>(area / std::max(1, config_.laser_max_blob_area));
+        score += 0.35f * static_cast<float>(max_v / 255.0);
+
+        if (score > best_score) {
+            best_score = score;
+            best_center = center;
+            best_found = true;
+        }
+    }
+
+    if (!best_found) {
+        return false;
+    }
+
+    out_center = best_center;
+    return true;
 }
 
 bool TargetTracker::init_roi_tracking(const cv::Mat& frame, const ColorBlob& target_blob) {

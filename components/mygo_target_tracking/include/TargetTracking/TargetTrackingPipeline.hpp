@@ -57,6 +57,9 @@ struct PipelineOutput {
     int lost_count = 0;
     bool target_found = false;
     cv::Point2f target_pos{-1.0f, -1.0f};
+    bool laser_found = false;
+    cv::Point2f laser_pos{-1.0f, -1.0f};
+    float laser_target_error_px = 0.0f;
     float pitch_angle = 0.0f;
     float yaw_angle = 0.0f;
     float pitch_speed = 0.0f;

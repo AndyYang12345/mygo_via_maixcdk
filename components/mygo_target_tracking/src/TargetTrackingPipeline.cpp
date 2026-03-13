@@ -82,10 +82,15 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
 
     TargetInfo info = tracker_.process_frame(frame);
     const bool has_target = info.found;
+    const bool has_laser = info.laser_found;
 
     cv::Point2f target_pos(-1.0f, -1.0f);
     if (has_target) {
         target_pos = info.target_center;
+    }
+    cv::Point2f laser_pos(-1.0f, -1.0f);
+    if (has_laser) {
+        laser_pos = info.laser_center;
     }
 
     if (state_ == TrackState::Waiting) {
@@ -129,14 +134,22 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         }
     } else if (state_ == TrackState::Tracking) {
         if (has_target) {
-            float dx = target_pos.x - cx;
-            float dy = target_pos.y - cy;
+            float dx = 0.0f;
+            float dy = 0.0f;
+            if (has_laser) {
+                dx = target_pos.x - laser_pos.x;
+                dy = target_pos.y - laser_pos.y;
+            } else {
+                dx = target_pos.x - cx;
+                dy = target_pos.y - cy;
+            }
             float pitch_error = std::atan2(dy, fy) * 180.0f / static_cast<float>(CV_PI);
             float yaw_error = -std::atan2(dx, fx) * 180.0f / static_cast<float>(CV_PI);
 
             if (config_.print_debug) {
                 std::cout << std::fixed << std::setprecision(2)
                           << "Target(px):(" << target_pos.x << "," << target_pos.y << ")"
+                          << " Laser(px):(" << laser_pos.x << "," << laser_pos.y << ")"
                           << " dx,dy:(" << dx << "," << dy << ")"
                           << " pitch_err:" << pitch_error
                           << " yaw_err:" << yaw_error
@@ -189,6 +202,9 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.yaw_speed = yaw_speed_;
     output.target_found = has_target;
     output.target_pos = target_pos;
+    output.laser_found = has_laser;
+    output.laser_pos = laser_pos;
+    output.laser_target_error_px = (has_target && has_laser) ? cv::norm(target_pos - laser_pos) : 0.0f;
 
     if (config_.draw_overlay) {
         output.canvas = frame.clone();
@@ -223,7 +239,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                 mode_line << "Target locked | press SPACE to start tracking";
                 break;
             case TrackState::Tracking:
-                mode_line << "Tracking | lost:" << lost_count_ << "/" << config_.lost_required;
+                mode_line << "Tracking(laser-hit) | lost:" << lost_count_ << "/" << config_.lost_required;
                 break;
         }
         mode_line << " | q/ESC=quit";
@@ -233,6 +249,20 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         if (has_target && target_pos.x >= 0.0f) {
             cv::circle(output.canvas, cv::Point(static_cast<int>(target_pos.x), static_cast<int>(target_pos.y)),
                        6, cv::Scalar(0, 0, 255), -1);
+        }
+        if (has_laser && laser_pos.x >= 0.0f) {
+            cv::circle(output.canvas, cv::Point(static_cast<int>(laser_pos.x), static_cast<int>(laser_pos.y)),
+                       4, cv::Scalar(0, 255, 255), 2);
+            cv::line(output.canvas,
+                     cv::Point(static_cast<int>(laser_pos.x), static_cast<int>(laser_pos.y)),
+                     cv::Point(static_cast<int>(target_pos.x), static_cast<int>(target_pos.y)),
+                     cv::Scalar(0, 255, 255),
+                     1);
+            std::ostringstream laser_line;
+            laser_line << std::fixed << std::setprecision(2)
+                       << "Laser->Target err(px): " << output.laser_target_error_px;
+            cv::putText(output.canvas, laser_line.str(), {20, 210}, cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                        cv::Scalar(0, 255, 255), 2);
         }
 
         cv::drawMarker(output.canvas, cv::Point(static_cast<int>(cx), static_cast<int>(cy)),

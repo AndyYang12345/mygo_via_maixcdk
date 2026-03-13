@@ -74,6 +74,30 @@ namespace maix::mygo_target_tracking
          * @maixpy maix.mygo_target_tracking.DetectResult.yaw_error
          */
         float yaw_error = 0.0f;
+
+        /**
+         * @brief Whether laser red dot is found.
+         * @maixpy maix.mygo_target_tracking.DetectResult.laser_found
+         */
+        bool laser_found = false;
+
+        /**
+         * @brief Laser center x in pixels.
+         * @maixpy maix.mygo_target_tracking.DetectResult.laser_cx
+         */
+        float laser_cx = -1.0f;
+
+        /**
+         * @brief Laser center y in pixels.
+         * @maixpy maix.mygo_target_tracking.DetectResult.laser_cy
+         */
+        float laser_cy = -1.0f;
+
+        /**
+         * @brief Laser to target pixel distance.
+         * @maixpy maix.mygo_target_tracking.DetectResult.laser_target_error_px
+         */
+        float laser_target_error_px = 0.0f;
     };
 
     /**
@@ -160,6 +184,36 @@ namespace maix::mygo_target_tracking
         }
 
         /**
+         * @brief Enable/disable laser red dot detection.
+         * @param enable true to enable laser detection.
+         * @maixpy maix.mygo_target_tracking.Recognizer.set_laser_enable
+         */
+        void set_laser_enable(bool enable)
+        {
+            TrackerConfig cfg = tracker_.get_config();
+            cfg.enable_laser_detection = enable;
+            tracker_.set_config(cfg);
+        }
+
+        /**
+         * @brief Configure laser HSV and blob thresholds.
+         * @param sat_min HSV saturation lower bound.
+         * @param val_min HSV value lower bound.
+         * @param min_area minimum blob area.
+         * @param max_area maximum blob area.
+         * @maixpy maix.mygo_target_tracking.Recognizer.set_laser_thresholds
+         */
+        void set_laser_thresholds(int sat_min, int val_min, int min_area, int max_area)
+        {
+            TrackerConfig cfg = tracker_.get_config();
+            cfg.laser_min_saturation = sat_min;
+            cfg.laser_min_value = val_min;
+            cfg.laser_min_blob_area = min_area;
+            cfg.laser_max_blob_area = max_area;
+            tracker_.set_config(cfg);
+        }
+
+        /**
          * @brief Detect target from an image.
          * @param image Input image.
          * @param fx Camera focal length x, <=0 means auto by width*0.6.
@@ -191,6 +245,10 @@ namespace maix::mygo_target_tracking
             out.target_cy = info.target_center.y;
             out.distance = info.distance;
             out.angle = info.angle;
+            out.laser_found = info.laser_found;
+            out.laser_cx = info.laser_center.x;
+            out.laser_cy = info.laser_center.y;
+            out.laser_target_error_px = info.laser_to_target_distance;
 
             if (info.found) {
                 const float width = static_cast<float>(image.width());
@@ -305,6 +363,30 @@ namespace maix::mygo_target_tracking
          * @maixpy maix.mygo_target_tracking.PipelineResult.lost_count
          */
         int lost_count = 0;
+
+        /**
+         * @brief Whether laser red dot is found in current frame.
+         * @maixpy maix.mygo_target_tracking.PipelineResult.laser_found
+         */
+        bool laser_found = false;
+
+        /**
+         * @brief Laser x in pixels.
+         * @maixpy maix.mygo_target_tracking.PipelineResult.laser_x
+         */
+        float laser_x = -1.0f;
+
+        /**
+         * @brief Laser y in pixels.
+         * @maixpy maix.mygo_target_tracking.PipelineResult.laser_y
+         */
+        float laser_y = -1.0f;
+
+        /**
+         * @brief Laser to target error in pixels.
+         * @maixpy maix.mygo_target_tracking.PipelineResult.laser_target_error_px
+         */
+        float laser_target_error_px = 0.0f;
     };
 
     /**
@@ -442,6 +524,10 @@ namespace maix::mygo_target_tracking
             out.target_found = output.target_found;
             out.target_x = output.target_pos.x;
             out.target_y = output.target_pos.y;
+            out.laser_found = output.laser_found;
+            out.laser_x = output.laser_pos.x;
+            out.laser_y = output.laser_pos.y;
+            out.laser_target_error_px = output.laser_target_error_px;
             out.lock_count = output.lock_count;
             out.lost_count = output.lost_count;
             return out;

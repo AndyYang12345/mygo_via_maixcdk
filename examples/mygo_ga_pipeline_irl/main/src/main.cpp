@@ -156,8 +156,15 @@ std::vector<Sample> collect_samples_from_pipeline(int max_frames,
             float cx = static_cast<float>(img->width()) * 0.5f;
             float cy = static_cast<float>(img->height()) * 0.5f;
 
-            float dx = out.target_pos.x - cx;
-            float dy = out.target_pos.y - cy;
+            float dx = 0.0f;
+            float dy = 0.0f;
+            if (out.laser_found) {
+                dx = out.target_pos.x - out.laser_pos.x;
+                dy = out.target_pos.y - out.laser_pos.y;
+            } else {
+                dx = out.target_pos.x - cx;
+                dy = out.target_pos.y - cy;
+            }
             float pitch_deg = std::atan2(dy, fy) * 180.0f / kPi;
             float yaw_deg = -std::atan2(dx, fx) * 180.0f / kPi;
 
@@ -178,6 +185,10 @@ std::vector<Sample> collect_samples_from_pipeline(int max_frames,
                              "found=" + std::to_string(found_count),
                              image::COLOR_GREEN,
                              1.5f);
+            img->draw_string(8, 52,
+                             std::string("laser=") + (out.laser_found ? "on" : "off"),
+                             out.laser_found ? image::COLOR_GREEN : image::COLOR_YELLOW,
+                             1.2f);
             disp.show(*img, image::FIT_COVER);
         }
 
