@@ -1,0 +1,5 @@
+menuconfig COMPONENT_MYGO_TARGET_TRACKING
+    bool "mygo_target_tracking"
+    default y
+    help
+        Mygo TargetTracking component with pipeline, tracker, gimbal and serial control.
