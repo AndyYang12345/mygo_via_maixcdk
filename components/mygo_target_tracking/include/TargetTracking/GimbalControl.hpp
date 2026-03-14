@@ -109,8 +109,8 @@ public:
     }
 
 private:
-    ServoMotor _pitch_motor{0};
-    ServoMotor _yaw_motor{1};
+    ServoMotor _pitch_motor{3};
+    ServoMotor _yaw_motor{0};
     std::string _command_buffer;
     SerialPort _serial;
 };
