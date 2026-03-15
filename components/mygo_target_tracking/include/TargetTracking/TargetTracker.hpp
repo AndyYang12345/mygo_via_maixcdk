@@ -5,10 +5,6 @@
 #include <vector>
 #include <string>
 
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-#include "maix_image.hpp"
-#endif
-
 // 配置结构体
 struct TrackerConfig {
     // 预处理参数
@@ -52,15 +48,6 @@ struct TrackerConfig {
     int roi_val_threshold = 60;   // 0-255
     bool use_kalman = true;
     float kalman_dt = 1.0f / 30.0f;
-
-    // Maix accelerated blob extraction
-    bool use_maix_find_blobs = false;
-    std::vector<std::vector<int>> lab_thresholds = {};
-    int x_stride = 2;
-    int y_stride = 1;
-    int pixels_threshold = 0;
-    bool merge_blobs = false;
-    int merge_margin = 0;
 
     // 激光红点检测参数
     bool enable_laser_detection = true;
@@ -112,9 +99,6 @@ public:
     
     // 主处理函数
     TargetInfo process_frame(const cv::Mat& frame);
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-    TargetInfo process_frame(maix::image::Image& image);
-#endif
 
     // ROI 跟踪控制
     void reset_roi_tracking();
@@ -126,9 +110,6 @@ public:
 private:
     // 核心处理函数
     std::vector<ColorBlob> extract_color_blobs(const cv::Mat& frame, cv::Mat& debug_mask);
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-    std::vector<ColorBlob> extract_color_blobs(maix::image::Image& image);
-#endif
     ColorBlob* find_center_blob(std::vector<ColorBlob>& blobs);
     ColorBlob* find_matching_target(const std::vector<ColorBlob>& blobs, const ColorBlob& center_blob);
     

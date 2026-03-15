@@ -63,6 +63,11 @@ void draw_pipeline_overlay(image::Image &img, const PipelineOutput &out)
     const image::Color target_color = image::Color::from_rgb(255, 64, 64);
     const image::Color laser_color = image::Color::from_rgb(255, 255, 0);
     const image::Color info_color = image::Color::from_rgb(0, 255, 0);
+    const image::Color ok_color = image::Color::from_rgb(0, 255, 0);
+    const image::Color bad_color = image::Color::from_rgb(255, 64, 64);
+    const image::Color hit_color = image::Color::from_rgb(0, 255, 0);
+    const image::Color miss_color = image::Color::from_rgb(255, 180, 0);
+    constexpr float kHitThresholdPx = 30.0f;
 
     if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
         img.draw_rect(static_cast<int>(out.target_pos.x) - 3,
@@ -92,6 +97,25 @@ void draw_pipeline_overlay(image::Image &img, const PipelineOutput &out)
                         1.2f);
     }
 
+    if (out.target_found && out.laser_found) {
+        const bool detect_hit = out.laser_target_error_px < kHitThresholdPx;
+        img.draw_line(static_cast<int>(out.target_pos.x),
+                      static_cast<int>(out.target_pos.y),
+                      static_cast<int>(out.laser_pos.x),
+                      static_cast<int>(out.laser_pos.y),
+                      detect_hit ? hit_color : miss_color,
+                      2);
+        char line3[128] = {0};
+        snprintf(line3,
+                 sizeof(line3),
+                 "detect:%s err=%.2fpx",
+                 detect_hit ? "HIT" : "MISS",
+                 out.laser_target_error_px);
+        img.draw_string(6, 50, line3, detect_hit ? hit_color : miss_color, 1.2f);
+    } else {
+        img.draw_string(6, 50, "detect:N/A", miss_color, 1.2f);
+    }
+
     std::string line1 = std::string("state:") + state_to_text(out.state) +
                         " lock:" + std::to_string(out.lock_count) +
                         " lost:" + std::to_string(out.lost_count);
@@ -105,13 +129,11 @@ void draw_pipeline_overlay(image::Image &img, const PipelineOutput &out)
              out.yaw_angle);
     img.draw_string(6, 28, line2, info_color, 1.2f);
 
-    if (out.target_found && out.laser_found) {
-        char line3[128] = {0};
-        snprintf(line3, sizeof(line3), "laser_err_px:%.2f", out.laser_target_error_px);
-        img.draw_string(6, 50, line3, info_color, 1.2f);
-    } else {
-        img.draw_string(6, 50, "laser_err_px:N/A", info_color, 1.2f);
-    }
+    std::string target_status = std::string("target:") + (out.target_found ? "FOUND" : "NOT FOUND");
+    std::string laser_status = std::string("laser:") + (out.laser_found ? "FOUND" : "NOT FOUND");
+    img.draw_string(6, 72, target_status, out.target_found ? ok_color : bad_color, 1.2f);
+    img.draw_string(6, 94, laser_status, out.laser_found ? ok_color : bad_color, 1.2f);
+    img.draw_string(6, 116, "auto scan->track | q:quit", info_color, 1.2f);
 }
 
 } // namespace
@@ -120,8 +142,6 @@ int _main(int argc, char *argv[])
 {
     int frame_width = 640;
     int frame_height = 480;
-    bool auto_state_machine = true;
-
     bool enable_pipeline_uart = true;
     int uart_baud = 115200;
     std::string uart_device = "/dev/ttyS4";
@@ -139,8 +159,6 @@ int _main(int argc, char *argv[])
             uart_baud = std::stoi(argv[++i]);
         } else if (arg == "--no-uart") {
             enable_pipeline_uart = false;
-        } else if (arg == "--manual") {
-            auto_state_machine = false;
         }
     }
 
@@ -164,9 +182,12 @@ int _main(int argc, char *argv[])
     cfg.cx = -1.0f;
     cfg.cy = -1.0f;
     cfg.pitch_home = 60.0f;
+    cfg.pitch_min = 30.0f;
+    cfg.pitch_max = 90.0f;
     cfg.yaw_home = 105.0f;
     cfg.max_speed = 180.0f;
     cfg.integral_limit = 30.0f;
+    cfg.scan_pitch_amp = 30.0f;
     cfg.enable_serial = enable_pipeline_uart;
     cfg.serial_device = uart_device;
     cfg.serial_baud = uart_baud;
@@ -174,21 +195,28 @@ int _main(int argc, char *argv[])
     cfg.print_debug = false;
     pipeline.set_config(cfg);
 
+    TrackerConfig tracker_cfg = pipeline.get_tracker_config();
+    tracker_cfg.show_debug_windows = false;
+    tracker_cfg.print_debug_info = false;
+    pipeline.set_tracker_config(tracker_cfg);
+
     if (enable_pipeline_uart) {
         bool opened = pipeline.open_serial();
         log::info("pipeline serial open: %s, dev=%s, baud=%d",
                   opened ? "true" : "false",
                   uart_device.c_str(),
                   uart_baud);
+        if (opened) {
+            const std::string init_arm_cmd = "{#001P1300T0000#002P2300T0000#003P1500T0000}";
+            bool init_ok = pipeline.send_raw_serial_command(init_arm_cmd);
+            log::info("arm init cmd sent: %s", init_ok ? "true" : "false");
+        }
     }
 
     camera::Camera cam(frame_width, frame_height, image::Format::FMT_RGB888);
     display::Display disp;
 
     uint64_t last_tick_ms = time::ticks_ms();
-    TrackState last_state = TrackState::Waiting;
-    bool has_last_state = false;
-
     while (!app::need_exit()) {
         image::Image *img = cam.read();
         if (!img) {
@@ -201,23 +229,9 @@ int _main(int argc, char *argv[])
         last_tick_ms = now_tick_ms;
         dt = clamp_value(dt, 0.001f, 0.05f);
 
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-        PipelineOutput out = pipeline.process_frame(*img, dt);
-#else
         cv::Mat frame;
         maix::image::image2cv(*img, frame, true, true);
         PipelineOutput out = pipeline.process_frame(frame, dt);
-#endif
-
-        if (auto_state_machine) {
-            if (out.state == TrackState::Waiting && (!has_last_state || last_state != TrackState::Waiting)) {
-                pipeline.handle_key(32);
-            } else if (out.state == TrackState::Locked && (!has_last_state || last_state != TrackState::Locked)) {
-                pipeline.handle_key(32);
-            }
-        }
-        last_state = out.state;
-        has_last_state = true;
 
         draw_pipeline_overlay(*img, out);
         disp.show(*img, image::FIT_COVER);

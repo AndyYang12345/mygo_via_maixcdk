@@ -3,10 +3,7 @@
 #include "TargetTracking/TargetTracker.hpp"
 #include "TargetTracking/TargetTrackingPipeline.hpp"
 #include "maix_image.hpp"
-
-#ifndef MYGO_TARGETTRACKING_USE_MAIX
 #include "maix_image_cv.hpp"
-#endif
 
 /**
  * @brief Mygo target tracking API wrapper for MaixCDK/MaixPy.
@@ -151,39 +148,6 @@ namespace maix::mygo_target_tracking
         }
 
         /**
-         * @brief Enable Maix accelerated blob extraction with LAB thresholds.
-         *
-         * Threshold format follows maix.image.Image.find_blobs, each element is
-         * [l_min, l_max, a_min, a_max, b_min, b_max].
-         * @param lab_thresholds LAB threshold list.
-         * @param x_stride X sampling stride.
-         * @param y_stride Y sampling stride.
-         * @maixpy maix.mygo_target_tracking.Recognizer.set_maix_blob_thresholds
-         */
-        void set_maix_blob_thresholds(const std::vector<std::vector<int>> &lab_thresholds,
-                                      int x_stride = 2,
-                                      int y_stride = 1)
-        {
-            TrackerConfig cfg = tracker_.get_config();
-            cfg.use_maix_find_blobs = true;
-            cfg.lab_thresholds = lab_thresholds;
-            cfg.x_stride = x_stride;
-            cfg.y_stride = y_stride;
-            tracker_.set_config(cfg);
-        }
-
-        /**
-         * @brief Disable Maix accelerated blob extraction and use OpenCV path.
-         * @maixpy maix.mygo_target_tracking.Recognizer.disable_maix_blob
-         */
-        void disable_maix_blob()
-        {
-            TrackerConfig cfg = tracker_.get_config();
-            cfg.use_maix_find_blobs = false;
-            tracker_.set_config(cfg);
-        }
-
-        /**
          * @brief Enable/disable laser red dot detection.
          * @param enable true to enable laser detection.
          * @maixpy maix.mygo_target_tracking.Recognizer.set_laser_enable
@@ -229,13 +193,9 @@ namespace maix::mygo_target_tracking
                             float cx = -1.0f,
                             float cy = -1.0f)
         {
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-            TargetInfo info = tracker_.process_frame(image);
-#else
             cv::Mat frame;
             maix::image::image2cv(image, frame, true, true);
             TargetInfo info = tracker_.process_frame(frame);
-#endif
 
             DetectResult out;
             out.found = info.found;
@@ -506,13 +466,9 @@ namespace maix::mygo_target_tracking
          */
         PipelineResult process(maix::image::Image &image, float dt)
         {
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-            PipelineOutput output = pipeline_.process_frame(image, dt);
-#else
             cv::Mat frame;
             maix::image::image2cv(image, frame, true, true);
             PipelineOutput output = pipeline_.process_frame(frame, dt);
-#endif
 
             PipelineResult out;
             out.state = static_cast<int>(output.state);

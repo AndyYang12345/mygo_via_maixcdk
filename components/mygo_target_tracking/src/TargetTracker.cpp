@@ -6,11 +6,6 @@
 #include <limits>
 #include <opencv2/video/tracking.hpp>
 
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-#include "maix_image_cv.hpp"
-#include "maix_log.hpp"
-#endif
-
 using namespace cv;
 using namespace std;
 
@@ -177,18 +172,6 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
 
     return result;
 }
-
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-TargetInfo TargetTracker::process_frame(maix::image::Image& image) {
-    cv::Mat mat;
-    if (maix::image::image2cv(image, mat, true, true) != maix::err::ERR_NONE) {
-        TargetInfo result;
-        result.found = false;
-        return result;
-    }
-    return process_frame(mat);
-}
-#endif
 
 // ============ ROI 跟踪 ============
 
@@ -443,20 +426,6 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame, const cv::Rect& r
 
 vector<ColorBlob> TargetTracker::extract_color_blobs(const Mat& frame, Mat& debug_mask) {
     vector<ColorBlob> blobs;
-
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-    if (config_.use_maix_find_blobs) {
-        maix::image::Image *img = maix::image::cv2image(const_cast<cv::Mat&>(frame), true, true);
-        if (!img) {
-            debug_mask = cv::Mat::zeros(frame.rows, frame.cols, CV_8UC1);
-            return blobs;
-        }
-        blobs = extract_color_blobs(*img);
-        delete img;
-        debug_mask = cv::Mat::zeros(frame.rows, frame.cols, CV_8UC1);
-        return blobs;
-    }
-#endif
     
     if (config_.print_debug_info) {
         cout << "[DEBUG] extract_color_blobs: Starting..." << endl;
@@ -612,64 +581,6 @@ vector<ColorBlob> TargetTracker::extract_color_blobs(const Mat& frame, Mat& debu
     
     return blobs;
 }
-
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-vector<ColorBlob> TargetTracker::extract_color_blobs(maix::image::Image& image) {
-    vector<ColorBlob> blobs;
-
-    if (config_.lab_thresholds.empty()) {
-        return blobs;
-    }
-
-    cv::Mat mat;
-    if (maix::image::image2cv(image, mat, true, true) != maix::err::ERR_NONE) {
-        return blobs;
-    }
-
-    std::vector<int> roi = {0, 0, image.width(), image.height()};
-    auto maix_blobs = image.find_blobs(
-        config_.lab_thresholds,
-        false,
-        roi,
-        config_.x_stride,
-        config_.y_stride,
-        config_.min_blob_area,
-        config_.pixels_threshold,
-        config_.merge_blobs,
-        config_.merge_margin
-    );
-
-    for (auto& blob_src : maix_blobs) {
-        int pixels = blob_src.pixels();
-        if (pixels < config_.min_blob_area || pixels > config_.max_blob_area) {
-            continue;
-        }
-
-        ColorBlob blob;
-        blob.bounding_rect = cv::Rect(blob_src.x(), blob_src.y(), blob_src.w(), blob_src.h());
-        blob.center = cv::Point2f(blob_src.cxf(), blob_src.cyf());
-        blob.area = pixels;
-        blob.circularity = blob_src.roundness();
-        if (blob.circularity < config_.min_circularity) {
-            continue;
-        }
-
-        cv::Rect safe_rect = blob.bounding_rect & cv::Rect(0, 0, mat.cols, mat.rows);
-        if (safe_rect.width <= 0 || safe_rect.height <= 0) {
-            continue;
-        }
-
-        cv::Mat blob_roi = mat(safe_rect);
-        blob.mean_color_bgr = cv::mean(blob_roi);
-        blob.mean_color_hsv = bgr_to_hsv(blob.mean_color_bgr);
-        blob.mean_color_lab = bgr_to_lab(blob.mean_color_bgr);
-        blob.is_dark = is_dark_color(blob.mean_color_bgr, config_.dark_brightness_threshold);
-        blobs.push_back(blob);
-    }
-
-    return blobs;
-}
-#endif
 
 ColorBlob* TargetTracker::find_center_blob(vector<ColorBlob>& blobs) {
     if (blobs.empty()) return nullptr;

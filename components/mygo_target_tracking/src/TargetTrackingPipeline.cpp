@@ -6,18 +6,14 @@
 #include <iostream>
 #include <sstream>
 
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-#include "maix_image_cv.hpp"
-#endif
-
 TargetTrackingPipeline::TargetTrackingPipeline() {
-    pitch_angle_ = config_.pitch_home;
+    pitch_angle_ = clamp_value(config_.pitch_home, config_.pitch_min, config_.pitch_max);
     yaw_angle_ = config_.yaw_home;
 }
 
 void TargetTrackingPipeline::set_config(const PipelineConfig& config) {
     config_ = config;
-    pitch_angle_ = config_.pitch_home;
+    pitch_angle_ = clamp_value(config_.pitch_home, config_.pitch_min, config_.pitch_max);
     yaw_angle_ = config_.yaw_home;
 }
 
@@ -34,11 +30,11 @@ TrackerConfig TargetTrackingPipeline::get_tracker_config() const {
 }
 
 void TargetTrackingPipeline::reset() {
-    state_ = TrackState::Waiting;
+    state_ = TrackState::Searching;
     lock_count_ = 0;
     lost_count_ = 0;
     scan_time_ = 0.0f;
-    pitch_angle_ = config_.pitch_home;
+    pitch_angle_ = clamp_value(config_.pitch_home, config_.pitch_min, config_.pitch_max);
     yaw_angle_ = config_.yaw_home;
     pitch_speed_ = 0.0f;
     yaw_speed_ = 0.0f;
@@ -48,19 +44,7 @@ void TargetTrackingPipeline::reset() {
 }
 
 void TargetTrackingPipeline::handle_key(int key) {
-    if (key == ' ') {
-        if (state_ == TrackState::Waiting) {
-            state_ = TrackState::Searching;
-            scan_time_ = 0.0f;
-            lock_count_ = 0;
-            lost_count_ = 0;
-        } else if (state_ == TrackState::Locked) {
-            state_ = TrackState::Tracking;
-            reset_pid(pid_pitch_);
-            reset_pid(pid_yaw_);
-            lost_count_ = 0;
-        }
-    }
+    (void)key;
 }
 
 PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float dt) {
@@ -93,17 +77,13 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         laser_pos = info.laser_center;
     }
 
-    if (state_ == TrackState::Waiting) {
-        pitch_angle_ = config_.pitch_home;
-        yaw_angle_ = config_.yaw_home;
-        pitch_speed_ = 0.0f;
-        yaw_speed_ = 0.0f;
-    } else if (state_ == TrackState::Searching) {
+    if (state_ == TrackState::Searching) {
         scan_time_ += dt;
         float yaw_phase = 2.0f * static_cast<float>(CV_PI) * config_.scan_yaw_freq * scan_time_;
         float pitch_phase = 2.0f * static_cast<float>(CV_PI) * config_.scan_pitch_freq * scan_time_ + config_.scan_phase;
         yaw_angle_ = config_.yaw_home + config_.scan_yaw_amp * std::sin(yaw_phase);
         pitch_angle_ = config_.pitch_home + config_.scan_pitch_amp * std::sin(pitch_phase);
+        pitch_angle_ = clamp_value(pitch_angle_, config_.pitch_min, config_.pitch_max);
         yaw_speed_ = config_.scan_yaw_amp * 2.0f * static_cast<float>(CV_PI) * config_.scan_yaw_freq * std::cos(yaw_phase);
         pitch_speed_ = config_.scan_pitch_amp * 2.0f * static_cast<float>(CV_PI) * config_.scan_pitch_freq * std::cos(pitch_phase);
 
@@ -114,23 +94,11 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         }
 
         if (lock_count_ >= config_.lock_required) {
-            state_ = TrackState::Locked;
+            state_ = TrackState::Tracking;
+            reset_pid(pid_pitch_);
+            reset_pid(pid_yaw_);
             lock_count_ = 0;
             lost_count_ = 0;
-        }
-    } else if (state_ == TrackState::Locked) {
-        pitch_speed_ = 0.0f;
-        yaw_speed_ = 0.0f;
-        if (has_target) {
-            lost_count_ = 0;
-        } else {
-            lost_count_++;
-            if (lost_count_ >= config_.lost_required) {
-                state_ = TrackState::Searching;
-                lost_count_ = 0;
-                lock_count_ = 0;
-                scan_time_ = 0.0f;
-            }
         }
     } else if (state_ == TrackState::Tracking) {
         if (has_target) {
@@ -166,6 +134,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
 
             pitch_angle_ += pitch_speed_ * dt;
             yaw_angle_ += yaw_speed_ * dt;
+            pitch_angle_ = clamp_value(pitch_angle_, config_.pitch_min, config_.pitch_max);
 
             lost_count_ = 0;
         } else {
@@ -229,17 +198,15 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
 
         std::ostringstream mode_line;
         switch (state_) {
-            case TrackState::Waiting:
-                mode_line << "Waiting | press SPACE to start scanning";
-                break;
             case TrackState::Searching:
-                mode_line << "Searching | lock:" << lock_count_ << "/" << config_.lock_required;
-                break;
-            case TrackState::Locked:
-                mode_line << "Target locked | press SPACE to start tracking";
+                mode_line << "Searching(sin) | lock:" << lock_count_ << "/" << config_.lock_required;
                 break;
             case TrackState::Tracking:
                 mode_line << "Tracking(laser-hit) | lost:" << lost_count_ << "/" << config_.lost_required;
+                break;
+            case TrackState::Waiting:
+            case TrackState::Locked:
+                mode_line << "Searching(sin)";
                 break;
         }
         mode_line << " | q/ESC=quit";
@@ -274,18 +241,6 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     return output;
 }
 
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-PipelineOutput TargetTrackingPipeline::process_frame(maix::image::Image& image, float dt) {
-    cv::Mat frame;
-    PipelineOutput output;
-    if (maix::image::image2cv(image, frame, true, true) != maix::err::ERR_NONE) {
-        output.state = state_;
-        return output;
-    }
-    return process_frame(frame, dt);
-}
-#endif
-
 float TargetTrackingPipeline::get_pitch_angle() const {
     return pitch_angle_;
 }
@@ -307,6 +262,10 @@ void TargetTrackingPipeline::close_serial() {
 
 bool TargetTrackingPipeline::is_serial_open() const {
     return gimbal_.is_serial_open();
+}
+
+bool TargetTrackingPipeline::send_raw_serial_command(const std::string& command) {
+    return gimbal_.send_raw_command(command);
 }
 
 float TargetTrackingPipeline::clamp_value(float v, float lo, float hi) const {

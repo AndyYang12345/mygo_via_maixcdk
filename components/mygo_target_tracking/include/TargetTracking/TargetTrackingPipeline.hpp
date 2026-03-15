@@ -4,10 +4,6 @@
 #include <opencv2/opencv.hpp>
 #include <string>
 
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-#include "maix_image.hpp"
-#endif
-
 #include "TargetTracking/GimbalControl.hpp"
 #include "TargetTracking/TargetTracker.hpp"
 
@@ -23,6 +19,8 @@ struct PipelineConfig {
     // Home angles
     float pitch_home = 60.0f;
     float yaw_home = 105.0f;
+    float pitch_min = 30.0f;
+    float pitch_max = 90.0f;
 
     // PID limits
     float max_speed = 180.0f;
@@ -52,7 +50,7 @@ struct PipelineConfig {
 struct PipelineOutput {
     cv::Mat canvas;
     std::string command;
-    TrackState state = TrackState::Waiting;
+    TrackState state = TrackState::Searching;
     int lock_count = 0;
     int lost_count = 0;
     bool target_found = false;
@@ -80,9 +78,6 @@ public:
     void handle_key(int key);
 
     PipelineOutput process_frame(const cv::Mat& frame, float dt);
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-    PipelineOutput process_frame(maix::image::Image& image, float dt);
-#endif
 
     float get_pitch_angle() const;
     float get_yaw_angle() const;
@@ -90,6 +85,7 @@ public:
     bool open_serial();
     void close_serial();
     bool is_serial_open() const;
+    bool send_raw_serial_command(const std::string& command);
 
 private:
     struct PID {
@@ -106,7 +102,7 @@ private:
     void reset_pid(PID& pid);
 
     PipelineConfig config_;
-    TrackState state_ = TrackState::Waiting;
+    TrackState state_ = TrackState::Searching;
     int lock_count_ = 0;
     int lost_count_ = 0;
     float scan_time_ = 0.0f;
