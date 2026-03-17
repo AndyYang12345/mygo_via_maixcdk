@@ -8,13 +8,13 @@
 
 TargetTrackingPipeline::TargetTrackingPipeline() {
     pitch_angle_ = clamp_value(config_.pitch_home, config_.pitch_min, config_.pitch_max);
-    yaw_angle_ = config_.yaw_home;
+    yaw_angle_ = clamp_value(config_.yaw_home, config_.yaw_min, config_.yaw_max);
 }
 
 void TargetTrackingPipeline::set_config(const PipelineConfig& config) {
     config_ = config;
     pitch_angle_ = clamp_value(config_.pitch_home, config_.pitch_min, config_.pitch_max);
-    yaw_angle_ = config_.yaw_home;
+    yaw_angle_ = clamp_value(config_.yaw_home, config_.yaw_min, config_.yaw_max);
 }
 
 PipelineConfig TargetTrackingPipeline::get_config() const {
@@ -35,7 +35,7 @@ void TargetTrackingPipeline::reset() {
     lost_count_ = 0;
     scan_time_ = 0.0f;
     pitch_angle_ = clamp_value(config_.pitch_home, config_.pitch_min, config_.pitch_max);
-    yaw_angle_ = config_.yaw_home;
+    yaw_angle_ = clamp_value(config_.yaw_home, config_.yaw_min, config_.yaw_max);
     pitch_speed_ = 0.0f;
     yaw_speed_ = 0.0f;
     reset_pid(pid_pitch_);
@@ -83,6 +83,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         float pitch_phase = 2.0f * static_cast<float>(CV_PI) * config_.scan_pitch_freq * scan_time_ + config_.scan_phase;
         yaw_angle_ = config_.yaw_home + config_.scan_yaw_amp * std::sin(yaw_phase);
         pitch_angle_ = config_.pitch_home + config_.scan_pitch_amp * std::sin(pitch_phase);
+        yaw_angle_ = clamp_value(yaw_angle_, config_.yaw_min, config_.yaw_max);
         pitch_angle_ = clamp_value(pitch_angle_, config_.pitch_min, config_.pitch_max);
         yaw_speed_ = config_.scan_yaw_amp * 2.0f * static_cast<float>(CV_PI) * config_.scan_yaw_freq * std::cos(yaw_phase);
         pitch_speed_ = config_.scan_pitch_amp * 2.0f * static_cast<float>(CV_PI) * config_.scan_pitch_freq * std::cos(pitch_phase);
@@ -102,15 +103,8 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         }
     } else if (state_ == TrackState::Tracking) {
         if (has_target) {
-            float dx = 0.0f;
-            float dy = 0.0f;
-            if (has_laser) {
-                dx = target_pos.x - laser_pos.x;
-                dy = target_pos.y - laser_pos.y;
-            } else {
-                dx = target_pos.x - cx;
-                dy = target_pos.y - cy;
-            }
+            float dx = target_pos.x - cx;
+            float dy = target_pos.y - cy;
             float pitch_error = std::atan2(dy, fy) * 180.0f / static_cast<float>(CV_PI);
             float yaw_error = -std::atan2(dx, fx) * 180.0f / static_cast<float>(CV_PI);
 
@@ -135,6 +129,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             pitch_angle_ += pitch_speed_ * dt;
             yaw_angle_ += yaw_speed_ * dt;
             pitch_angle_ = clamp_value(pitch_angle_, config_.pitch_min, config_.pitch_max);
+            yaw_angle_ = clamp_value(yaw_angle_, config_.yaw_min, config_.yaw_max);
 
             lost_count_ = 0;
         } else {

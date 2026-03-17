@@ -185,6 +185,8 @@ int _main(int argc, char *argv[])
     cfg.pitch_min = 30.0f;
     cfg.pitch_max = 90.0f;
     cfg.yaw_home = 105.0f;
+    cfg.yaw_min = 0.0f;
+    cfg.yaw_max = 270.0f;
     cfg.max_speed = 180.0f;
     cfg.integral_limit = 30.0f;
     cfg.scan_pitch_amp = 30.0f;

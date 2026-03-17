@@ -16,7 +16,7 @@ public:
                float initial_min_angle_deg = 0.0f,
                float initial_max_angle_deg = 270.0f)
         : _id(id),_angle(initial_angle_deg),_speed(0.0f),_last_angle(initial_angle_deg){
-        _pwm = angle_to_pwm(initial_angle_deg, initial_min_angle_deg, initial_max_angle_deg);
+        _pwm = angle_to_pwm(initial_angle_deg, initial_min_angle_deg, initial_max_angle_deg, _min_pwm, _max_pwm);
         std::cout<<"ServoMotor "<<_id<<" created."<<std::endl;
     };
     void set_angle(float angle){

@@ -21,6 +21,8 @@ struct PipelineConfig {
     float yaw_home = 105.0f;
     float pitch_min = 30.0f;
     float pitch_max = 90.0f;
+    float yaw_min = 0.0f;
+    float yaw_max = 270.0f;
 
     // PID limits
     float max_speed = 180.0f;
