@@ -83,6 +83,15 @@ void draw_pipeline_overlay(image::Image &img, const PipelineOutput &out)
                         1.2f);
     }
 
+    if (out.roi_active && out.roi_rect.width > 0 && out.roi_rect.height > 0) {
+        img.draw_rect(out.roi_rect.x,
+                      out.roi_rect.y,
+                      out.roi_rect.width,
+                      out.roi_rect.height,
+                      image::Color::from_rgb(64, 160, 255),
+                      1);
+    }
+
     if (out.laser_found && out.laser_pos.x >= 0.0f && out.laser_pos.y >= 0.0f) {
         img.draw_rect(static_cast<int>(out.laser_pos.x) - 3,
                       static_cast<int>(out.laser_pos.y) - 3,
@@ -114,6 +123,18 @@ void draw_pipeline_overlay(image::Image &img, const PipelineOutput &out)
         img.draw_string(6, 50, line3, detect_hit ? hit_color : miss_color, 1.2f);
     } else {
         img.draw_string(6, 50, "detect:N/A", miss_color, 1.2f);
+    }
+
+    if (out.aim_pos.x >= 0.0f && out.aim_pos.y >= 0.0f) {
+        const int aim_x = static_cast<int>(out.aim_pos.x);
+        const int aim_y = static_cast<int>(out.aim_pos.y);
+        img.draw_line(aim_x - 8, aim_y, aim_x + 8, aim_y, image::Color::from_rgb(0, 200, 255), 1);
+        img.draw_line(aim_x, aim_y - 8, aim_x, aim_y + 8, image::Color::from_rgb(0, 200, 255), 1);
+        img.draw_string(aim_x + 10,
+                        aim_y - 10,
+                        out.aim_from_laser ? "aim:laser" : "aim:center",
+                        image::Color::from_rgb(0, 200, 255),
+                        1.0f);
     }
 
     std::string line1 = std::string("state:") + state_to_text(out.state) +
@@ -175,6 +196,9 @@ int _main(int argc, char *argv[])
         setup_uart_pinmux(device_name, uart_device);
     }
 
+    const bool auto_start_search = true;
+    const bool auto_start_tracking = true;
+
     TargetTrackingPipeline pipeline;
     PipelineConfig cfg = pipeline.get_config();
     cfg.fx = -1.0f;
@@ -182,14 +206,13 @@ int _main(int argc, char *argv[])
     cfg.cx = -1.0f;
     cfg.cy = -1.0f;
     cfg.pitch_home = 60.0f;
-    cfg.pitch_min = 30.0f;
-    cfg.pitch_max = 90.0f;
     cfg.yaw_home = 105.0f;
-    cfg.yaw_min = 0.0f;
-    cfg.yaw_max = 270.0f;
+    cfg.pitch_pwm_zero_angle = cfg.pitch_home;
+    cfg.yaw_pwm_zero_angle = cfg.yaw_home;
+    cfg.pitch_error_sign = -1.0f;
+    cfg.yaw_error_sign = 1.0f;
     cfg.max_speed = 180.0f;
     cfg.integral_limit = 30.0f;
-    cfg.scan_pitch_amp = 30.0f;
     cfg.enable_serial = enable_pipeline_uart;
     cfg.serial_device = uart_device;
     cfg.serial_baud = uart_baud;
@@ -208,17 +231,23 @@ int _main(int argc, char *argv[])
                   opened ? "true" : "false",
                   uart_device.c_str(),
                   uart_baud);
-        if (opened) {
-            const std::string init_arm_cmd = "{#001P1300T0000#002P2300T0000#003P1500T0000}";
-            bool init_ok = pipeline.send_raw_serial_command(init_arm_cmd);
-            log::info("arm init cmd sent: %s", init_ok ? "true" : "false");
-        }
+        // if (opened) {
+        //     const std::string init_arm_cmd = "{#00P1500T1000P1350T1000P2300T1000P1500T1000P1500T1000}";
+        //     bool init_ok = pipeline.send_raw_serial_command(init_arm_cmd);
+        //     log::info("arm init cmd sent: %s", init_ok ? "true" : "false");
+        // }
+    }
+
+    if (auto_start_search) {
+        pipeline.handle_key(' ');
+        log::info("[AUTO] Waiting -> Searching (startup)");
     }
 
     camera::Camera cam(frame_width, frame_height, image::Format::FMT_RGB888);
     display::Display disp;
 
     uint64_t last_tick_ms = time::ticks_ms();
+    TrackState last_state = TrackState::Waiting;
     while (!app::need_exit()) {
         image::Image *img = cam.read();
         if (!img) {
@@ -234,6 +263,18 @@ int _main(int argc, char *argv[])
         cv::Mat frame;
         maix::image::image2cv(*img, frame, true, true);
         PipelineOutput out = pipeline.process_frame(frame, dt);
+
+        if (out.state != last_state) {
+            log::info("[STATE] %s -> %s",
+                      state_to_text(last_state),
+                      state_to_text(out.state));
+        }
+
+        if (auto_start_tracking && out.state == TrackState::Locked) {
+            pipeline.handle_key(' ');
+            log::info("[AUTO] Locked -> Tracking");
+        }
+        last_state = out.state;
 
         draw_pipeline_overlay(*img, out);
         disp.show(*img, image::FIT_COVER);

@@ -7,14 +7,18 @@
 #include <sstream>
 
 TargetTrackingPipeline::TargetTrackingPipeline() {
-    pitch_angle_ = clamp_value(config_.pitch_home, config_.pitch_min, config_.pitch_max);
-    yaw_angle_ = clamp_value(config_.yaw_home, config_.yaw_min, config_.yaw_max);
+    gimbal_.set_pitch_zero_angle_deg(config_.pitch_pwm_zero_angle);
+    gimbal_.set_yaw_zero_angle_deg(config_.yaw_pwm_zero_angle);
+    pitch_angle_ = config_.pitch_home;
+    yaw_angle_ = config_.yaw_home;
 }
 
 void TargetTrackingPipeline::set_config(const PipelineConfig& config) {
     config_ = config;
-    pitch_angle_ = clamp_value(config_.pitch_home, config_.pitch_min, config_.pitch_max);
-    yaw_angle_ = clamp_value(config_.yaw_home, config_.yaw_min, config_.yaw_max);
+    gimbal_.set_pitch_zero_angle_deg(config_.pitch_pwm_zero_angle);
+    gimbal_.set_yaw_zero_angle_deg(config_.yaw_pwm_zero_angle);
+    pitch_angle_ = config_.pitch_home;
+    yaw_angle_ = config_.yaw_home;
 }
 
 PipelineConfig TargetTrackingPipeline::get_config() const {
@@ -30,12 +34,12 @@ TrackerConfig TargetTrackingPipeline::get_tracker_config() const {
 }
 
 void TargetTrackingPipeline::reset() {
-    state_ = TrackState::Searching;
+    state_ = TrackState::Waiting;
     lock_count_ = 0;
     lost_count_ = 0;
     scan_time_ = 0.0f;
-    pitch_angle_ = clamp_value(config_.pitch_home, config_.pitch_min, config_.pitch_max);
-    yaw_angle_ = clamp_value(config_.yaw_home, config_.yaw_min, config_.yaw_max);
+    pitch_angle_ = config_.pitch_home;
+    yaw_angle_ = config_.yaw_home;
     pitch_speed_ = 0.0f;
     yaw_speed_ = 0.0f;
     reset_pid(pid_pitch_);
@@ -44,7 +48,19 @@ void TargetTrackingPipeline::reset() {
 }
 
 void TargetTrackingPipeline::handle_key(int key) {
-    (void)key;
+    if (key == ' ') {
+        if (state_ == TrackState::Waiting) {
+            state_ = TrackState::Searching;
+            scan_time_ = 0.0f;
+            lock_count_ = 0;
+            lost_count_ = 0;
+        } else if (state_ == TrackState::Locked) {
+            state_ = TrackState::Tracking;
+            reset_pid(pid_pitch_);
+            reset_pid(pid_yaw_);
+            lost_count_ = 0;
+        }
+    }
 }
 
 PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float dt) {
@@ -72,19 +88,26 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     if (has_target) {
         target_pos = info.target_center;
     }
+    output.roi_active = info.roi_active;
+    output.roi_rect = info.roi_rect;
     cv::Point2f laser_pos(-1.0f, -1.0f);
     if (has_laser) {
         laser_pos = info.laser_center;
     }
+    output.aim_pos = cv::Point2f(cx, cy);
+    output.aim_from_laser = false;
 
-    if (state_ == TrackState::Searching) {
+    if (state_ == TrackState::Waiting) {
+        pitch_angle_ = config_.pitch_home;
+        yaw_angle_ = config_.yaw_home;
+        pitch_speed_ = 0.0f;
+        yaw_speed_ = 0.0f;
+    } else if (state_ == TrackState::Searching) {
         scan_time_ += dt;
         float yaw_phase = 2.0f * static_cast<float>(CV_PI) * config_.scan_yaw_freq * scan_time_;
         float pitch_phase = 2.0f * static_cast<float>(CV_PI) * config_.scan_pitch_freq * scan_time_ + config_.scan_phase;
         yaw_angle_ = config_.yaw_home + config_.scan_yaw_amp * std::sin(yaw_phase);
         pitch_angle_ = config_.pitch_home + config_.scan_pitch_amp * std::sin(pitch_phase);
-        yaw_angle_ = clamp_value(yaw_angle_, config_.yaw_min, config_.yaw_max);
-        pitch_angle_ = clamp_value(pitch_angle_, config_.pitch_min, config_.pitch_max);
         yaw_speed_ = config_.scan_yaw_amp * 2.0f * static_cast<float>(CV_PI) * config_.scan_yaw_freq * std::cos(yaw_phase);
         pitch_speed_ = config_.scan_pitch_amp * 2.0f * static_cast<float>(CV_PI) * config_.scan_pitch_freq * std::cos(pitch_phase);
 
@@ -95,18 +118,41 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         }
 
         if (lock_count_ >= config_.lock_required) {
-            state_ = TrackState::Tracking;
-            reset_pid(pid_pitch_);
-            reset_pid(pid_yaw_);
+            state_ = TrackState::Locked;
             lock_count_ = 0;
             lost_count_ = 0;
         }
+    } else if (state_ == TrackState::Locked) {
+        pitch_speed_ = 0.0f;
+        yaw_speed_ = 0.0f;
+        if (has_target) {
+            lost_count_ = 0;
+        } else {
+            lost_count_++;
+            if (lost_count_ >= config_.lost_required) {
+                state_ = TrackState::Searching;
+                lost_count_ = 0;
+                lock_count_ = 0;
+                scan_time_ = 0.0f;
+            }
+        }
     } else if (state_ == TrackState::Tracking) {
         if (has_target) {
-            float dx = target_pos.x - cx;
-            float dy = target_pos.y - cy;
-            float pitch_error = std::atan2(dy, fy) * 180.0f / static_cast<float>(CV_PI);
-            float yaw_error = -std::atan2(dx, fx) * 180.0f / static_cast<float>(CV_PI);
+            float dx = 0.0f;
+            float dy = 0.0f;
+            if (has_laser) {
+                dx = target_pos.x - laser_pos.x;
+                dy = target_pos.y - laser_pos.y;
+                output.aim_pos = laser_pos;
+                output.aim_from_laser = true;
+            } else {
+                dx = target_pos.x - cx;
+                dy = target_pos.y - cy;
+                output.aim_pos = cv::Point2f(cx, cy);
+                output.aim_from_laser = false;
+            }
+            float pitch_error = config_.pitch_error_sign * std::atan2(dy, fy) * 180.0f / static_cast<float>(CV_PI);
+            float yaw_error = config_.yaw_error_sign * (-std::atan2(dx, fx) * 180.0f / static_cast<float>(CV_PI));
 
             if (config_.print_debug) {
                 std::cout << std::fixed << std::setprecision(2)
@@ -128,9 +174,6 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
 
             pitch_angle_ += pitch_speed_ * dt;
             yaw_angle_ += yaw_speed_ * dt;
-            pitch_angle_ = clamp_value(pitch_angle_, config_.pitch_min, config_.pitch_max);
-            yaw_angle_ = clamp_value(yaw_angle_, config_.yaw_min, config_.yaw_max);
-
             lost_count_ = 0;
         } else {
             pitch_speed_ = 0.0f;
@@ -166,6 +209,8 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.yaw_speed = yaw_speed_;
     output.target_found = has_target;
     output.target_pos = target_pos;
+    output.roi_active = info.roi_active;
+    output.roi_rect = info.roi_rect;
     output.laser_found = has_laser;
     output.laser_pos = laser_pos;
     output.laser_target_error_px = (has_target && has_laser) ? cv::norm(target_pos - laser_pos) : 0.0f;
@@ -193,15 +238,17 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
 
         std::ostringstream mode_line;
         switch (state_) {
+            case TrackState::Waiting:
+                mode_line << "Waiting | press SPACE to start scanning";
+                break;
             case TrackState::Searching:
-                mode_line << "Searching(sin) | lock:" << lock_count_ << "/" << config_.lock_required;
+                mode_line << "Searching | lock:" << lock_count_ << "/" << config_.lock_required;
+                break;
+            case TrackState::Locked:
+                mode_line << "Target locked | press SPACE to start tracking";
                 break;
             case TrackState::Tracking:
                 mode_line << "Tracking(laser-hit) | lost:" << lost_count_ << "/" << config_.lost_required;
-                break;
-            case TrackState::Waiting:
-            case TrackState::Locked:
-                mode_line << "Searching(sin)";
                 break;
         }
         mode_line << " | q/ESC=quit";

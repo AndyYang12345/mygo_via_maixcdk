@@ -34,6 +34,8 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     TargetInfo result;
     result.found = false;
     result.laser_found = false;
+    result.roi_active = false;
+    result.roi_rect = cv::Rect(-1, -1, 0, 0);
     frames_processed_++;
     
     // 更新帧大小
@@ -329,6 +331,9 @@ bool TargetTracker::update_roi_tracking(const cv::Mat& frame, TargetInfo& result
     roi.y = std::max(0, static_cast<int>(predict_point.y) - config_.roi_padding);
     roi.width = std::min(frame.cols - roi.x, config_.roi_padding * 2);
     roi.height = std::min(frame.rows - roi.y, config_.roi_padding * 2);
+
+    result.roi_active = true;
+    result.roi_rect = roi;
 
     if (roi.width <= 0 || roi.height <= 0) {
         return false;

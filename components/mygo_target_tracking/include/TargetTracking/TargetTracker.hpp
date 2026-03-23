@@ -82,6 +82,8 @@ struct TargetInfo {
     cv::Point2f target_center;        // 目标色块中心
     float distance = 0.0f;            // 距离（像素）
     float angle = 0.0f;               // 角度（度）
+    bool roi_active = false;          // 当前是否在使用ROI跟踪
+    cv::Rect roi_rect{-1, -1, 0, 0};  // 当前ROI窗口
     bool laser_found = false;         // 是否找到激光红点
     cv::Point2f laser_center{-1.0f, -1.0f}; // 激光红点中心
     float laser_to_target_distance = 0.0f;  // 激光到目标像素距离

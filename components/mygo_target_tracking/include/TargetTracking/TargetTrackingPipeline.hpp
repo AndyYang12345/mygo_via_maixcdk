@@ -19,14 +19,18 @@ struct PipelineConfig {
     // Home angles
     float pitch_home = 60.0f;
     float yaw_home = 105.0f;
-    float pitch_min = 30.0f;
-    float pitch_max = 90.0f;
-    float yaw_min = 0.0f;
-    float yaw_max = 270.0f;
+
+    // Servo PWM zero-angle calibration (angle that maps to PWM=1500)
+    float pitch_pwm_zero_angle = 60.0f;
+    float yaw_pwm_zero_angle = 105.0f;
 
     // PID limits
     float max_speed = 180.0f;
     float integral_limit = 30.0f;
+
+    // Control direction (set to -1.0f when axis direction is reversed)
+    float pitch_error_sign = -1.0f;
+    float yaw_error_sign = 1.0f;
 
     // Search/lock behavior
     int lock_required = 30;
@@ -52,13 +56,17 @@ struct PipelineConfig {
 struct PipelineOutput {
     cv::Mat canvas;
     std::string command;
-    TrackState state = TrackState::Searching;
+    TrackState state = TrackState::Waiting;
     int lock_count = 0;
     int lost_count = 0;
     bool target_found = false;
     cv::Point2f target_pos{-1.0f, -1.0f};
+    bool roi_active = false;
+    cv::Rect roi_rect{-1, -1, 0, 0};
     bool laser_found = false;
     cv::Point2f laser_pos{-1.0f, -1.0f};
+    cv::Point2f aim_pos{-1.0f, -1.0f};
+    bool aim_from_laser = false;
     float laser_target_error_px = 0.0f;
     float pitch_angle = 0.0f;
     float yaw_angle = 0.0f;
@@ -104,7 +112,7 @@ private:
     void reset_pid(PID& pid);
 
     PipelineConfig config_;
-    TrackState state_ = TrackState::Searching;
+    TrackState state_ = TrackState::Waiting;
     int lock_count_ = 0;
     int lost_count_ = 0;
     float scan_time_ = 0.0f;
