@@ -1,11 +1,11 @@
 id: mygo_pipeline_uart
 name: MyGo Pipeline UART
-name[zh]: MyGo 管线串口控制
+name[zh]: MyGo 管线 TCP/串口控制
 icon: mygo.png
 author: harekasa
-desc: Pure C++ target tracking pipeline with UART output for gimbal control
-desc[zh]: 纯C++目标追踪管线，串口输出云台控制命令
-version: 1.0.1
+desc: Pure C++ target tracking pipeline with TCP control and optional UART/Bluetooth output
+desc[zh]: 纯C++目标追踪管线，支持 TCP 控制及可选 UART/蓝牙串口输出
+version: 1.2.0
 files:
   README.md: README.md
   mygo.png: mygo.png
