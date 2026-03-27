@@ -2,6 +2,7 @@
 #include "maix_camera.hpp"
 #include "maix_display.hpp"
 #include "maix_image_cv.hpp"
+#include "maix_key.hpp"
 #include "maix_pinmap.hpp"
 #include "main.h"
 
@@ -46,6 +47,7 @@ constexpr uint32_t kHeader = 0xBBACCAAA;
 constexpr const char *kAppId = "mygo_pipeline_uart";
 constexpr const char *kAppName = "MyGo Pipeline TCP";
 constexpr const char *kAppDesc = "Target tracking pipeline with TCP control/status";
+constexpr float kHitThresholdPx = 30.0f;
 
 enum class VisionAppState {
     Idle,
@@ -102,6 +104,35 @@ const char *vision_app_state_to_text(VisionAppState state)
 bool is_bluetooth_serial_device(const std::string &device_name)
 {
     return device_name.rfind("/dev/rfcomm", 0) == 0;
+}
+
+std::string preview_text(const std::string &text, size_t max_len)
+{
+    std::string cleaned;
+    cleaned.reserve(text.size());
+    for (unsigned char ch : text) {
+        if (ch == '\r' || ch == '\n' || ch == '\t') {
+            cleaned.push_back(' ');
+            continue;
+        }
+
+        if (std::isprint(ch)) {
+            cleaned.push_back(static_cast<char>(ch));
+        }
+    }
+
+    if (cleaned.empty()) {
+        return "-";
+    }
+
+    if (cleaned.size() <= max_len) {
+        return cleaned;
+    }
+
+    if (max_len <= 3) {
+        return cleaned.substr(0, max_len);
+    }
+    return cleaned.substr(0, max_len - 3) + "...";
 }
 
 void append_u32_le(std::vector<uint8_t> &out, uint32_t value)
@@ -195,43 +226,120 @@ void draw_pipeline_overlay(
     image::Image &img,
     const PipelineOutput &out,
     VisionAppState app_state,
-    bool task_active)
+    bool task_active,
+    bool tcp_listening,
+    bool tcp_client_connected,
+    int tcp_port,
+    bool uart_enabled,
+    const std::string &uart_device)
 {
     const image::Color target_color = image::Color::from_rgb(255, 64, 64);
     const image::Color laser_color = image::Color::from_rgb(255, 255, 0);
-    const image::Color info_color = image::Color::from_rgb(0, 255, 0);
-    const image::Color ok_color = image::Color::from_rgb(0, 255, 0);
-    const image::Color bad_color = image::Color::from_rgb(255, 64, 64);
-    const image::Color hit_color = image::Color::from_rgb(0, 255, 0);
-    const image::Color miss_color = image::Color::from_rgb(255, 180, 0);
-    constexpr float kHitThresholdPx = 30.0f;
+    const image::Color ok_color = image::Color::from_rgb(0, 220, 120);
+    const image::Color bad_color = image::Color::from_rgb(255, 72, 72);
+    const image::Color warn_color = image::Color::from_rgb(255, 196, 0);
+    const image::Color info_color = image::Color::from_rgb(0, 200, 255);
+    const image::Color panel_bg = image::Color::from_rgb(18, 24, 34);
+    const image::Color panel_border = image::Color::from_rgb(230, 230, 230);
+    const image::Color panel_text = image::Color::from_rgb(245, 245, 245);
+    const image::Color dark_good_bg = image::Color::from_rgb(8, 60, 32);
+    const image::Color dark_warn_bg = image::Color::from_rgb(76, 50, 0);
+    const image::Color dark_bad_bg = image::Color::from_rgb(76, 12, 12);
+    const image::Color dark_info_bg = image::Color::from_rgb(10, 38, 76);
+    const image::Color hit_color = ok_color;
+    const image::Color miss_color = warn_color;
 
-    char line0[128] = {0};
-    snprintf(
-        line0,
-        sizeof(line0),
-        "task:%s app:%s",
-        task_active ? "ACTIVE" : "WAIT_START",
-        vision_app_state_to_text(app_state));
-    img.draw_string(6, 6, line0, info_color, 1.2f);
+    const int width = img.width();
+    const int height = img.height();
+    const int margin = std::max(10, width / 64);
+    const int gap = margin;
+    const int top_h = std::max(96, height / 5);
+    const int banner_h = std::max(74, height / 7);
+    const int bottom_h = std::max(46, height / 10);
+    const int box_w = (width - margin * 2 - gap) / 2;
+    const int left_x = margin;
+    const int right_x = margin + box_w + gap;
+    const int top_y = margin;
+    const int banner_y = top_y + top_h + gap;
+    const int info_y = banner_y + banner_h + gap;
+    const int info_h = std::max(170, height - info_y - bottom_h - margin * 2);
+    const int bottom_y = height - bottom_h - margin;
+    const bool detect_hit = task_active && out.target_found && out.laser_found &&
+                            out.laser_target_error_px < kHitThresholdPx;
+    const int info_first_y = info_y + 46;
+    const int info_preview_y = info_y + info_h - 24;
+    const int info_step = std::max(18, (info_preview_y - info_first_y - 4) / 6);
 
-    std::string line1 = std::string("state:") + state_to_text(out.state) +
-                        " lock:" + std::to_string(out.lock_count) +
-                        " lost:" + std::to_string(out.lost_count);
-    img.draw_string(6, 28, line1, info_color, 1.2f);
+    auto draw_panel = [&](int x, int y, int w, int h, const image::Color &fill, const image::Color &border) {
+        img.draw_rect(x, y, w, h, fill, -1);
+        img.draw_rect(x, y, w, h, border, 3);
+    };
 
-    char line2[128] = {0};
-    snprintf(line2,
-             sizeof(line2),
-             "pitch:%.2f yaw:%.2f",
-             out.pitch_angle,
-             out.yaw_angle);
-    img.draw_string(6, 50, line2, info_color, 1.2f);
+    auto draw_info_line = [&](int x,
+                              int y,
+                              const std::string &label,
+                              const std::string &value,
+                              const image::Color &value_color) {
+        img.draw_string(x, y, label, panel_text, 0.95f, 2);
+        img.draw_string(x + 114, y, value, value_color, 0.95f, 2);
+    };
 
-    if (!task_active) {
-        img.draw_string(6, 72, "TCP control ready, wait host START", image::Color::from_rgb(0, 200, 255), 1.2f);
-        img.draw_string(6, 94, "Host STOP keeps app alive", image::Color::from_rgb(0, 200, 255), 1.2f);
-        return;
+    const std::string tcp_main = !tcp_listening ? "LISTEN FAIL"
+        : (tcp_client_connected ? "HOST CONNECTED" : "WAIT HOST");
+    const std::string tcp_sub = std::string("PORT ") + std::to_string(tcp_port) + "  |  OK EXIT";
+    const image::Color tcp_color = !tcp_listening ? bad_color
+        : (tcp_client_connected ? ok_color : warn_color);
+    const image::Color tcp_bg = !tcp_listening ? dark_bad_bg
+        : (tcp_client_connected ? dark_good_bg : dark_warn_bg);
+
+    const std::string track_text = task_active ? state_to_text(out.state) : "WAIT START";
+    const std::string task_main = task_active ? "RUNNING"
+        : (app_state == VisionAppState::Stopped ? "STOPPED" : "IDLE");
+    const std::string task_sub = std::string("TRACK ") + track_text;
+    const image::Color task_color = task_active ? ok_color
+        : (app_state == VisionAppState::Stopped ? warn_color : info_color);
+    const image::Color task_bg = task_active ? dark_good_bg
+        : (app_state == VisionAppState::Stopped ? dark_warn_bg : dark_info_bg);
+
+    std::string banner_text = "READY FOR START";
+    std::string banner_sub = "Host A starts recognition, host B stops.";
+    image::Color banner_color = info_color;
+    image::Color banner_bg = dark_info_bg;
+    if (!tcp_listening) {
+        banner_text = "TCP SERVER ERROR";
+        banner_sub = "Port bind failed. Restart app after fixing network.";
+        banner_color = bad_color;
+        banner_bg = dark_bad_bg;
+    } else if (!tcp_client_connected) {
+        banner_text = "WAIT HOST TCP";
+        banner_sub = "Upper computer not connected yet.";
+        banner_color = warn_color;
+        banner_bg = dark_warn_bg;
+    } else if (!task_active && app_state == VisionAppState::Stopped) {
+        banner_text = "TASK STOPPED";
+        banner_sub = "Recognition is closed. Waiting host start command.";
+        banner_color = warn_color;
+        banner_bg = dark_warn_bg;
+    } else if (task_active && out.state == TrackState::Tracking) {
+        banner_text = "TRACKING TARGET";
+        banner_sub = out.target_found ? "Servo command is being generated." : "Tracking active.";
+        banner_color = ok_color;
+        banner_bg = dark_good_bg;
+    } else if (task_active && out.state == TrackState::Locked) {
+        banner_text = "LOCKED READY";
+        banner_sub = "Locked target, preparing stable tracking.";
+        banner_color = warn_color;
+        banner_bg = dark_warn_bg;
+    } else if (task_active && out.state == TrackState::Searching) {
+        banner_text = "SEARCHING TARGET";
+        banner_sub = "Pipeline running and waiting for a valid target.";
+        banner_color = info_color;
+        banner_bg = dark_info_bg;
+    } else if (task_active) {
+        banner_text = "PIPELINE ACTIVE";
+        banner_sub = "Recognition is running.";
+        banner_color = info_color;
+        banner_bg = dark_info_bg;
     }
 
     if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
@@ -271,23 +379,13 @@ void draw_pipeline_overlay(
                         1.2f);
     }
 
-    if (out.target_found && out.laser_found) {
-        const bool detect_hit = out.laser_target_error_px < kHitThresholdPx;
+    if (task_active && out.target_found && out.laser_found) {
         img.draw_line(static_cast<int>(out.target_pos.x),
                       static_cast<int>(out.target_pos.y),
                       static_cast<int>(out.laser_pos.x),
                       static_cast<int>(out.laser_pos.y),
                       detect_hit ? hit_color : miss_color,
                       2);
-        char line3[128] = {0};
-        snprintf(line3,
-                 sizeof(line3),
-                 "detect:%s err=%.2fpx",
-                 detect_hit ? "HIT" : "MISS",
-                 out.laser_target_error_px);
-        img.draw_string(6, 72, line3, detect_hit ? hit_color : miss_color, 1.2f);
-    } else {
-        img.draw_string(6, 72, "detect:N/A", miss_color, 1.2f);
     }
 
     if (out.aim_pos.x >= 0.0f && out.aim_pos.y >= 0.0f) {
@@ -302,10 +400,71 @@ void draw_pipeline_overlay(
                         1.0f);
     }
 
-    std::string target_status = std::string("target:") + (out.target_found ? "FOUND" : "NOT FOUND");
-    std::string laser_status = std::string("laser:") + (out.laser_found ? "FOUND" : "NOT FOUND");
-    img.draw_string(6, 94, target_status, out.target_found ? ok_color : bad_color, 1.2f);
-    img.draw_string(6, 116, laser_status, out.laser_found ? ok_color : bad_color, 1.2f);
+    draw_panel(left_x, top_y, box_w, top_h, tcp_bg, tcp_color);
+    img.draw_string(left_x + 14, top_y + 18, "TCP STATUS", panel_text, 0.95f, 2);
+    img.draw_string(left_x + 14, top_y + 48, tcp_main, tcp_color, 1.35f, 2);
+    img.draw_string(left_x + 14, top_y + 78, tcp_sub, panel_text, 0.88f, 2);
+
+    draw_panel(right_x, top_y, box_w, top_h, task_bg, task_color);
+    img.draw_string(right_x + 14, top_y + 18, "VISION TASK", panel_text, 0.95f, 2);
+    img.draw_string(right_x + 14, top_y + 48, task_main, task_color, 1.35f, 2);
+    img.draw_string(right_x + 14, top_y + 78, task_sub, panel_text, 0.88f, 2);
+
+    draw_panel(left_x, banner_y, width - margin * 2, banner_h, banner_bg, banner_color);
+    img.draw_string(left_x + 16, banner_y + 18, banner_text, banner_color, 1.65f, 2);
+    img.draw_string(left_x + 16, banner_y + 52, banner_sub, panel_text, 0.92f, 2);
+
+    draw_panel(left_x, info_y, box_w, info_h, panel_bg, panel_border);
+    img.draw_string(left_x + 14, info_y + 16, "SYSTEM", panel_text, 0.95f, 2);
+    draw_info_line(left_x + 14, info_first_y + info_step * 0, "APP", vision_app_state_to_text(app_state), task_color);
+    draw_info_line(left_x + 14, info_first_y + info_step * 1, "TASK", task_active ? "ACTIVE" : "WAIT HOST", task_active ? ok_color : warn_color);
+    draw_info_line(left_x + 14, info_first_y + info_step * 2, "TRACK", track_text, task_active ? info_color : warn_color);
+    draw_info_line(left_x + 14, info_first_y + info_step * 3, "HOST", tcp_client_connected ? "ONLINE" : "OFFLINE", tcp_client_connected ? ok_color : bad_color);
+    draw_info_line(left_x + 14, info_first_y + info_step * 4, "OUT", uart_enabled ? "UART+TCP" : "TCP ONLY", uart_enabled ? info_color : warn_color);
+    draw_info_line(left_x + 14, info_first_y + info_step * 5, "EXIT", "OK BUTTON", warn_color);
+    img.draw_string(left_x + 14,
+                    info_preview_y,
+                    std::string("LINK: ") + preview_text(uart_enabled ? uart_device : "tcp-control-only", 28),
+                    panel_text,
+                    0.82f,
+                    2);
+
+    draw_panel(right_x, info_y, box_w, info_h, panel_bg, panel_border);
+    img.draw_string(right_x + 14, info_y + 16, "VISION", panel_text, 0.95f, 2);
+    draw_info_line(right_x + 14, info_first_y + info_step * 0, "TARGET",
+                   task_active ? (out.target_found ? "FOUND" : "MISS") : "N/A",
+                   task_active ? (out.target_found ? ok_color : bad_color) : warn_color);
+    draw_info_line(right_x + 14, info_first_y + info_step * 1, "LASER",
+                   task_active ? (out.laser_found ? "FOUND" : "MISS") : "N/A",
+                   task_active ? (out.laser_found ? ok_color : bad_color) : warn_color);
+    draw_info_line(right_x + 14, info_first_y + info_step * 2, "HIT",
+                   task_active && out.target_found && out.laser_found ? (detect_hit ? "HIT" : "MISS") : "N/A",
+                   task_active && out.target_found && out.laser_found ? (detect_hit ? ok_color : warn_color) : warn_color);
+    draw_info_line(right_x + 14, info_first_y + info_step * 3, "ERROR",
+                   task_active && out.target_found && out.laser_found
+                       ? preview_text(std::to_string(static_cast<int>(out.laser_target_error_px)) + " px", 10)
+                       : "N/A",
+                   task_active && out.target_found && out.laser_found ? info_color : warn_color);
+    draw_info_line(right_x + 14, info_first_y + info_step * 4, "AIM",
+                   task_active ? (out.aim_from_laser ? "LASER" : "CENTER") : "IDLE",
+                   task_active ? info_color : warn_color);
+    draw_info_line(right_x + 14, info_first_y + info_step * 5, "CMD",
+                   task_active ? (!out.command.empty() ? "READY" : "EMPTY") : "IDLE",
+                   task_active ? (!out.command.empty() ? ok_color : warn_color) : warn_color);
+    img.draw_string(right_x + 14,
+                    info_preview_y,
+                    std::string("FRAME: ") + preview_text(out.command, 28),
+                    panel_text,
+                    0.82f,
+                    2);
+
+    draw_panel(left_x, bottom_y, width - margin * 2, bottom_h, panel_bg, panel_border);
+    img.draw_string(left_x + 16,
+                    bottom_y + 16,
+                    "HOST A START   HOST B STOP   LOCAL OK EXIT",
+                    warn_color,
+                    0.92f,
+                    2);
 }
 
 class VisionControlTcpServer {
@@ -396,6 +555,16 @@ public:
                 send_bytes(response);
             }
         }
+    }
+
+    bool is_listening() const
+    {
+        return listen_fd_ >= 0;
+    }
+
+    bool is_client_connected() const
+    {
+        return client_fd_ >= 0;
     }
 
 private:
@@ -747,6 +916,8 @@ int _main(int argc, char *argv[])
 
     camera::Camera cam(frame_width, frame_height, image::Format::FMT_RGB888);
     display::Display disp;
+    peripheral::key::add_default_listener();
+    log::info("local OK key exit enabled");
 
     VisionAppState app_state = VisionAppState::Idle;
     bool task_active = false;
@@ -824,7 +995,15 @@ int _main(int argc, char *argv[])
         }
 
         last_output = out;
-        draw_pipeline_overlay(*img, out, app_state, task_active);
+        draw_pipeline_overlay(*img,
+                              out,
+                              app_state,
+                              task_active,
+                              tcp_server.is_listening(),
+                              tcp_server.is_client_connected(),
+                              tcp_port,
+                              enable_pipeline_uart,
+                              uart_device);
         disp.show(*img, image::FIT_COVER);
         delete img;
     }
