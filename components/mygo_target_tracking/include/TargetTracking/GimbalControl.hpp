@@ -117,8 +117,10 @@ public:
         _yaw_motor.set_speed(speed);
     }
     void get_command(){
-        _yaw_motor.generate_command(0.0f, 270.0f);
-        _pitch_motor.generate_command(0.0f, 270.0f);
+        // Use calibrated zero-angle mapping so PWM=1500 corresponds to the
+        // configured forward axis instead of a hard-coded 0..270 degree span.
+        _yaw_motor.generate_centered_command(0.0f, 270.0f, _yaw_zero_angle_deg);
+        _pitch_motor.generate_centered_command(0.0f, 270.0f, _pitch_zero_angle_deg);
 
         _command_buffer = "{" + _yaw_motor.get_command_buffer() + _pitch_motor.get_command_buffer() + "}";
         std::cout << "Generated command: " << _command_buffer << std::endl;
