@@ -27,10 +27,12 @@ struct PipelineConfig {
     // PID limits
     float max_speed = 180.0f;
     float integral_limit = 30.0f;
+    float max_angle_step_per_frame_deg = 8.0f;
 
     // Control direction (set to -1.0f when axis direction is reversed)
     float pitch_error_sign = -1.0f;
     float yaw_error_sign = 1.0f;
+    bool use_laser_for_aim = true;
 
     // Search/lock behavior
     int lock_required = 30;
@@ -42,6 +44,7 @@ struct PipelineConfig {
     float scan_yaw_freq = 0.15f;   // Hz
     float scan_pitch_freq = 0.10f; // Hz
     float scan_phase = static_cast<float>(CV_PI) * 0.5f;
+    float search_slew_speed = 120.0f; // deg/s
 
     // Output behavior
     bool draw_overlay = true;

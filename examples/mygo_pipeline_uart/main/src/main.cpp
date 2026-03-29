@@ -3,7 +3,6 @@
 #include "maix_display.hpp"
 #include "maix_image_cv.hpp"
 #include "maix_key.hpp"
-#include "maix_pinmap.hpp"
 #include "main.h"
 
 #include "TargetTracking/TargetTrackingPipeline.hpp"
@@ -15,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <optional>
@@ -99,11 +99,6 @@ const char *vision_app_state_to_text(VisionAppState state)
         case VisionAppState::Stopped: return "STOPPED";
         default: return "UNKNOWN";
     }
-}
-
-bool is_bluetooth_serial_device(const std::string &device_name)
-{
-    return device_name.rfind("/dev/rfcomm", 0) == 0;
 }
 
 std::string preview_text(const std::string &text, size_t max_len)
@@ -196,32 +191,6 @@ std::vector<std::string> split_strings_with_nul(const std::vector<uint8_t> &data
     return result;
 }
 
-void setup_uart_pinmux(const std::string &device_name, const std::string &uart_device)
-{
-    auto set_pin = [](const std::string &pin_name, const std::string &function_name) {
-        err::Err ret = peripheral::pinmap::set_pin_function(pin_name.c_str(), function_name.c_str());
-        if (ret != err::Err::ERR_NONE) {
-            log::warn("pinmux failed: %s -> %s", pin_name.c_str(), function_name.c_str());
-            return false;
-        }
-        return true;
-    };
-
-    if (device_name == "maixcam2") {
-        if (uart_device != "/dev/ttyS4") {
-            log::warn("MaixCAM2 recommends UART4 on A21/A22, current device: %s", uart_device.c_str());
-        }
-        set_pin("A21", "UART4_TX");
-        set_pin("A22", "UART4_RX");
-        return;
-    }
-
-    if (uart_device == "/dev/ttyS0") {
-        set_pin("A16", "UART0_TX");
-        set_pin("A17", "UART0_RX");
-    }
-}
-
 void draw_pipeline_overlay(
     image::Image &img,
     const PipelineOutput &out,
@@ -229,9 +198,7 @@ void draw_pipeline_overlay(
     bool task_active,
     bool tcp_listening,
     bool tcp_client_connected,
-    int tcp_port,
-    bool uart_enabled,
-    const std::string &uart_device)
+    int tcp_port)
 {
     const image::Color target_color = image::Color::from_rgb(255, 64, 64);
     const image::Color laser_color = image::Color::from_rgb(255, 255, 0);
@@ -271,7 +238,7 @@ void draw_pipeline_overlay(
     const int info_step = std::max(18, (info_preview_y - info_first_y - 4) / 6);
 
     auto draw_panel = [&](int x, int y, int w, int h, const image::Color &fill, const image::Color &border) {
-        img.draw_rect(x, y, w, h, fill, -1);
+        (void)fill;
         img.draw_rect(x, y, w, h, border, 3);
     };
 
@@ -420,11 +387,11 @@ void draw_pipeline_overlay(
     draw_info_line(left_x + 14, info_first_y + info_step * 1, "TASK", task_active ? "ACTIVE" : "WAIT HOST", task_active ? ok_color : warn_color);
     draw_info_line(left_x + 14, info_first_y + info_step * 2, "TRACK", track_text, task_active ? info_color : warn_color);
     draw_info_line(left_x + 14, info_first_y + info_step * 3, "HOST", tcp_client_connected ? "ONLINE" : "OFFLINE", tcp_client_connected ? ok_color : bad_color);
-    draw_info_line(left_x + 14, info_first_y + info_step * 4, "OUT", uart_enabled ? "UART+TCP" : "TCP ONLY", uart_enabled ? info_color : warn_color);
+    draw_info_line(left_x + 14, info_first_y + info_step * 4, "OUT", "TCP->ROS", info_color);
     draw_info_line(left_x + 14, info_first_y + info_step * 5, "EXIT", "OK BUTTON", warn_color);
     img.draw_string(left_x + 14,
                     info_preview_y,
-                    std::string("LINK: ") + preview_text(uart_enabled ? uart_device : "tcp-control-only", 28),
+                    std::string("LINK: ") + preview_text("tcp-control-only", 28),
                     panel_text,
                     0.82f,
                     2);
@@ -830,10 +797,10 @@ int _main(int argc, char *argv[])
 {
     int frame_width = 640;
     int frame_height = 480;
-    bool enable_pipeline_uart = false;
-    int uart_baud = 115200;
     int tcp_port = 5555;
-    std::string uart_device = "/dev/ttyS4";
+    std::string cmd_log_path = "servo_command_debug.csv";
+    bool invert_pitch = false;
+    bool invert_yaw = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -841,57 +808,46 @@ int _main(int argc, char *argv[])
             frame_width = std::stoi(argv[++i]);
         } else if (arg == "--height" && i + 1 < argc) {
             frame_height = std::stoi(argv[++i]);
-        } else if (arg == "--uart" && i + 1 < argc) {
-            uart_device = argv[++i];
-            enable_pipeline_uart = true;
-        } else if (arg == "--bt-rfcomm" && i + 1 < argc) {
-            uart_device = argv[++i];
-            enable_pipeline_uart = true;
-        } else if (arg == "--baud" && i + 1 < argc) {
-            uart_baud = std::stoi(argv[++i]);
         } else if (arg == "--tcp-port" && i + 1 < argc) {
             tcp_port = std::stoi(argv[++i]);
-        } else if (arg == "--no-uart") {
-            enable_pipeline_uart = false;
+        } else if (arg == "--cmd-log" && i + 1 < argc) {
+            cmd_log_path = argv[++i];
+        } else if (arg == "--invert-pitch") {
+            invert_pitch = true;
+        } else if (arg == "--invert-yaw") {
+            invert_yaw = true;
         }
     }
 
     std::string device_name = sys::device_name();
     std::transform(device_name.begin(), device_name.end(), device_name.begin(), ::tolower);
     log::info("device: %s", device_name.c_str());
-
-    if (device_name != "maixcam2" && uart_device == "/dev/ttyS4") {
-        uart_device = "/dev/ttyS0";
-        log::info("non-MaixCAM2 platform, fallback uart device to %s", uart_device.c_str());
-    }
-
-    if (enable_pipeline_uart && !is_bluetooth_serial_device(uart_device)) {
-        setup_uart_pinmux(device_name, uart_device);
-    } else if (enable_pipeline_uart && is_bluetooth_serial_device(uart_device)) {
-        log::info("bluetooth serial output enabled: %s", uart_device.c_str());
-    } else {
-        log::info("local uart forwarding disabled, use tcp control path");
-    }
+    log::info("local uart forwarding disabled, use tcp->ros control path");
 
     const bool auto_start_tracking = true;
 
     TargetTrackingPipeline pipeline;
     PipelineConfig cfg = pipeline.get_config();
-    cfg.fx = -1.0f;
-    cfg.fy = -1.0f;
-    cfg.cx = -1.0f;
-    cfg.cy = -1.0f;
+    cfg.fx = 381.625f;
+    cfg.fy = 381.625f;
+    cfg.cx = static_cast<float>(frame_width) * 0.5f;
+    cfg.cy = static_cast<float>(frame_height) * 0.5f;
     cfg.pitch_home = 60.0f;
-    cfg.yaw_home = 105.0f;
+    cfg.yaw_home = 270.0f;
     cfg.pitch_pwm_zero_angle = cfg.pitch_home;
     cfg.yaw_pwm_zero_angle = cfg.yaw_home;
+    // Real device observation: larger yaw PWM turns camera left, larger pitch PWM turns camera up.
+    // These signs map image error to that physical motion model.
     cfg.pitch_error_sign = -1.0f;
     cfg.yaw_error_sign = 1.0f;
-    cfg.max_speed = 180.0f;
-    cfg.integral_limit = 30.0f;
-    cfg.enable_serial = enable_pipeline_uart;
-    cfg.serial_device = uart_device;
-    cfg.serial_baud = uart_baud;
+    if (invert_pitch) {
+        cfg.pitch_error_sign *= -1.0f;
+    }
+    if (invert_yaw) {
+        cfg.yaw_error_sign *= -1.0f;
+    }
+    cfg.use_laser_for_aim = false;
+    cfg.enable_serial = false;
     cfg.draw_overlay = false;
     cfg.print_debug = false;
     pipeline.set_config(cfg);
@@ -900,14 +856,6 @@ int _main(int argc, char *argv[])
     tracker_cfg.show_debug_windows = false;
     tracker_cfg.print_debug_info = false;
     pipeline.set_tracker_config(tracker_cfg);
-
-    if (enable_pipeline_uart) {
-        bool opened = pipeline.open_serial();
-        log::info("pipeline serial open: %s, dev=%s, baud=%d",
-                  opened ? "true" : "false",
-                  uart_device.c_str(),
-                  uart_baud);
-    }
 
     VisionControlTcpServer tcp_server(tcp_port);
     if (!tcp_server.start()) {
@@ -919,8 +867,18 @@ int _main(int argc, char *argv[])
     peripheral::key::add_default_listener();
     log::info("local OK key exit enabled");
 
+    std::ofstream cmd_log(cmd_log_path, std::ios::out | std::ios::trunc);
+    if (!cmd_log.is_open()) {
+        log::warn("failed to open command log file: %s", cmd_log_path.c_str());
+    } else {
+        cmd_log << "time_ms,frame,app_state,track_state,active,target_found,laser_found,command\n";
+        log::info("command log file: %s", cmd_log_path.c_str());
+    }
+
     VisionAppState app_state = VisionAppState::Idle;
     bool task_active = false;
+    uint64_t run_start_ms = time::ticks_ms();
+    uint64_t frame_index = 0;
     uint64_t last_tick_ms = time::ticks_ms();
     TrackState last_state = TrackState::Waiting;
     PipelineOutput last_output;
@@ -965,6 +923,7 @@ int _main(int argc, char *argv[])
         }
 
         uint64_t now_tick_ms = time::ticks_ms();
+        frame_index++;
         float dt = static_cast<float>(now_tick_ms - last_tick_ms) / 1000.0f;
         last_tick_ms = now_tick_ms;
         dt = clamp_value(dt, 0.001f, 0.05f);
@@ -995,20 +954,36 @@ int _main(int argc, char *argv[])
         }
 
         last_output = out;
+
+        if (cmd_log.is_open()) {
+            std::string command_clean = out.command;
+            for (char &ch : command_clean) {
+                if (ch == '"') {
+                    ch = '\'';
+                }
+            }
+            cmd_log << (now_tick_ms - run_start_ms) << ","
+                    << frame_index << ","
+                    << vision_app_state_to_text(app_state) << ","
+                    << state_to_text(out.state) << ","
+                    << (task_active ? 1 : 0) << ","
+                    << (out.target_found ? 1 : 0) << ","
+                    << (out.laser_found ? 1 : 0) << ",\""
+                    << command_clean << "\"\n";
+            cmd_log.flush();
+        }
+
         draw_pipeline_overlay(*img,
                               out,
                               app_state,
                               task_active,
                               tcp_server.is_listening(),
                               tcp_server.is_client_connected(),
-                              tcp_port,
-                              enable_pipeline_uart,
-                              uart_device);
+                              tcp_port);
         disp.show(*img, image::FIT_COVER);
         delete img;
     }
 
-    pipeline.close_serial();
     return 0;
 }
 

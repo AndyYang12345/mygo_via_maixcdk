@@ -18,6 +18,9 @@
 - `--bt-rfcomm <device>`：蓝牙串口设备，例如 `/dev/rfcomm0`
 - `--baud <int>`：串口波特率（默认 `115200`）
 - `--tcp-port <int>`：TCP 服务端监听端口（默认 `5555`）
+- `--cmd-log <path>`：舵机指令调试日志输出路径（默认 `servo_command_debug.csv`）
+- `--invert-pitch`：反转 pitch 控制方向（用于实机方向与默认模型不一致时）
+- `--invert-yaw`：反转 yaw 控制方向（用于实机方向与默认模型不一致时）
 - `--no-uart`：关闭串口输出
 
 > 说明：当前默认行为是启动后等待上位机 `START` 命令，不会自动进入扫描。

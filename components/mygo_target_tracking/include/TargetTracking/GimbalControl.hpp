@@ -32,8 +32,13 @@ public:
     void generate_command(float min_angle_deg, float max_angle_deg){
         const float clamped = std::clamp(_angle, min_angle_deg, max_angle_deg);
         _pwm = angle_to_pwm(clamped, min_angle_deg, max_angle_deg);
-        if (_speed > 0.0f) {
-            _time_ms = static_cast<int>(std::abs(clamped - _last_angle) / _speed * 1000.0f);
+        if (!_has_last_angle) {
+            _time_ms = 0;
+            _has_last_angle = true;
+        } else if (_speed > 0.0f) {
+            const float safe_speed = std::max(std::abs(_speed), kMinSpeedDegPerSec);
+            const int raw_ms = static_cast<int>(std::abs(clamped - _last_angle) / safe_speed * 1000.0f);
+            _time_ms = std::clamp(raw_ms, 0, kMaxTimeMs);
         } else {
             _time_ms = 0;
         }
@@ -53,8 +58,13 @@ public:
             static_cast<int>(std::lround(1500.0f + delta_deg * kPwmPerDeg)),
             500,
             2500);
-        if (_speed > 0.0f) {
-            _time_ms = static_cast<int>(std::abs(clamped - _last_angle) / _speed * 1000.0f);
+        if (!_has_last_angle) {
+            _time_ms = 0;
+            _has_last_angle = true;
+        } else if (_speed > 0.0f) {
+            const float safe_speed = std::max(std::abs(_speed), kMinSpeedDegPerSec);
+            const int raw_ms = static_cast<int>(std::abs(clamped - _last_angle) / safe_speed * 1000.0f);
+            _time_ms = std::clamp(raw_ms, 0, kMaxTimeMs);
         } else {
             _time_ms = 0;
         }
@@ -80,9 +90,13 @@ private:
     float _angle;
     float _speed;
     float _last_angle{0.0f};
+    bool _has_last_angle{false};
     int _pwm{1500};
     int _time_ms{0};
     std::string _cmd;
+
+    static constexpr float kMinSpeedDegPerSec = 1.0f;
+    static constexpr int kMaxTimeMs = 9999;
 
     static int angle_to_pwm(float angle_deg, float min_angle_deg, float max_angle_deg){
         const float span = max_angle_deg - min_angle_deg;

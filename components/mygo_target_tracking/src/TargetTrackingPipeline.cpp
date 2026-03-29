@@ -97,6 +97,9 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.aim_pos = cv::Point2f(cx, cy);
     output.aim_from_laser = false;
 
+    const float prev_pitch_angle = pitch_angle_;
+    const float prev_yaw_angle = yaw_angle_;
+
     if (state_ == TrackState::Waiting) {
         pitch_angle_ = config_.pitch_home;
         yaw_angle_ = config_.yaw_home;
@@ -106,10 +109,15 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         scan_time_ += dt;
         float yaw_phase = 2.0f * static_cast<float>(CV_PI) * config_.scan_yaw_freq * scan_time_;
         float pitch_phase = 2.0f * static_cast<float>(CV_PI) * config_.scan_pitch_freq * scan_time_ + config_.scan_phase;
-        yaw_angle_ = config_.yaw_home + config_.scan_yaw_amp * std::sin(yaw_phase);
-        pitch_angle_ = config_.pitch_home + config_.scan_pitch_amp * std::sin(pitch_phase);
-        yaw_speed_ = config_.scan_yaw_amp * 2.0f * static_cast<float>(CV_PI) * config_.scan_yaw_freq * std::cos(yaw_phase);
-        pitch_speed_ = config_.scan_pitch_amp * 2.0f * static_cast<float>(CV_PI) * config_.scan_pitch_freq * std::cos(pitch_phase);
+        const float yaw_target = config_.yaw_home + config_.scan_yaw_amp * std::sin(yaw_phase);
+        const float pitch_target = config_.pitch_home + config_.scan_pitch_amp * std::sin(pitch_phase);
+        const float search_step_max = std::max(1.0f, config_.search_slew_speed) * dt;
+        const float yaw_step = clamp_value(yaw_target - yaw_angle_, -search_step_max, search_step_max);
+        const float pitch_step = clamp_value(pitch_target - pitch_angle_, -search_step_max, search_step_max);
+        yaw_angle_ += yaw_step;
+        pitch_angle_ += pitch_step;
+        yaw_speed_ = yaw_step / dt;
+        pitch_speed_ = pitch_step / dt;
 
         if (has_target) {
             lock_count_++;
@@ -140,7 +148,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         if (has_target) {
             float dx = 0.0f;
             float dy = 0.0f;
-            if (has_laser) {
+            if (config_.use_laser_for_aim && has_laser) {
                 dx = target_pos.x - laser_pos.x;
                 dy = target_pos.y - laser_pos.y;
                 output.aim_pos = laser_pos;
@@ -187,6 +195,19 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             }
         }
     }
+
+    // Final guard: never allow one-frame angle jumps beyond the configured limit.
+    const float frame_step_limit = std::max(0.5f, config_.max_angle_step_per_frame_deg);
+    const float pitch_delta = pitch_angle_ - prev_pitch_angle;
+    const float yaw_delta = yaw_angle_ - prev_yaw_angle;
+    if (std::abs(pitch_delta) > frame_step_limit) {
+        pitch_angle_ = prev_pitch_angle + (pitch_delta > 0.0f ? frame_step_limit : -frame_step_limit);
+    }
+    if (std::abs(yaw_delta) > frame_step_limit) {
+        yaw_angle_ = prev_yaw_angle + (yaw_delta > 0.0f ? frame_step_limit : -frame_step_limit);
+    }
+    pitch_speed_ = (pitch_angle_ - prev_pitch_angle) / dt;
+    yaw_speed_ = (yaw_angle_ - prev_yaw_angle) / dt;
 
     gimbal_.set_pitch_angle(pitch_angle_);
     gimbal_.set_yaw_angle(yaw_angle_);

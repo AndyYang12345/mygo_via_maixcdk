@@ -4,41 +4,86 @@
 #include "maix_vision.hpp"
 #include "main.h"
 
+#include <memory>
+#include <string>
+
 using namespace maix;
 extern std::string html;
 
 int _main(int argc, char* argv[])
 {
-    int cam_w = -1;
-    int cam_h = -1;
+    int cam_w = 640;
+    int cam_h = 480;
     image::Format cam_fmt = image::Format::FMT_RGB888;
-    int cam_fps = -1;
+    int cam_fps = 30;
     int cam_buffer_num = 3;
-    if (argc > 1) {
-        if (!strcmp(argv[1], "-h")) {
-            log::info("./camera_display <width> <height> <format> <fps> <buff_num>");
-            log::info("example: ./camera_display 640 480 0 60 2");
-            exit(0);
-        } else {
-            cam_w = atoi(argv[1]);
+    int http_port = 8000;
+    bool enable_display = false;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            log::info("Usage:\n"
+                      "  ./stream_jpg_demo [--width N] [--height N] [--fps N] [--port N] [--display|--no-display]\\n"
+                      "  ./stream_jpg_demo <width> <height> <format> <fps> <buff_num>  (legacy positional)\\n"
+                      "Examples:\n"
+                      "  ./stream_jpg_demo --width 640 --height 480 --fps 30 --port 8000 --no-display\\n"
+                      "  ./stream_jpg_demo 640 480 0 30 3");
+            return 0;
+        } else if (arg == "--width" && i + 1 < argc) {
+            cam_w = atoi(argv[++i]);
+        } else if (arg == "--height" && i + 1 < argc) {
+            cam_h = atoi(argv[++i]);
+        } else if (arg == "--fps" && i + 1 < argc) {
+            cam_fps = atoi(argv[++i]);
+        } else if (arg == "--port" && i + 1 < argc) {
+            http_port = atoi(argv[++i]);
+        } else if (arg == "--buffer" && i + 1 < argc) {
+            cam_buffer_num = atoi(argv[++i]);
+        } else if (arg == "--display") {
+            enable_display = true;
+        } else if (arg == "--no-display") {
+            enable_display = false;
+        } else if (!arg.empty() && arg[0] != '-') {
+            // Backward compatibility: positional args.
+            cam_w = atoi(argv[i]);
+            if (i + 1 < argc) cam_h = atoi(argv[i + 1]);
+            if (i + 2 < argc) cam_fmt = (image::Format)atoi(argv[i + 2]);
+            if (i + 3 < argc) cam_fps = atoi(argv[i + 3]);
+            if (i + 4 < argc) cam_buffer_num = atoi(argv[i + 4]);
+            break;
         }
     }
-    if (argc > 2) cam_h = atoi(argv[2]);
-    if (argc > 3) cam_fmt = (image::Format)atoi(argv[3]);
-    if (argc > 4) cam_fps = atoi(argv[4]);
-    if (argc > 5) cam_buffer_num = atoi(argv[5]);
-    log::info("Camera width:%d height:%d format:%s fps:%d buffer_num:%d", cam_w, cam_h, image::fmt_names[cam_fmt].c_str(), cam_fps, cam_buffer_num);
+
+    cam_w = std::max(1, cam_w);
+    cam_h = std::max(1, cam_h);
+    cam_fps = std::max(1, cam_fps);
+    cam_buffer_num = std::max(1, cam_buffer_num);
+    http_port = std::max(1, http_port);
+
+    log::info("Camera passthrough mode");
+    log::info("camera width:%d height:%d format:%s fps:%d buffer_num:%d", cam_w, cam_h, image::fmt_names[cam_fmt].c_str(), cam_fps, cam_buffer_num);
+    log::info("stream port:%d local_display:%d", http_port, enable_display ? 1 : 0);
 
     camera::Camera cam = camera::Camera(cam_w, cam_h, cam_fmt, "", cam_fps, cam_buffer_num);
-    display::Display disp = display::Display();
-    log::info("camera and display open success\n");
+    std::unique_ptr<display::Display> disp;
+    if (enable_display) {
+        disp = std::make_unique<display::Display>();
+    }
+
+    log::info("camera open success");
     log::info("camera size: %dx%d\n", cam.width(), cam.height());
-    log::info("disp size: %dx%d\n", disp.width(), disp.height());
-    http::JpegStreamer stream = http::JpegStreamer("", 8000);
+    if (disp) {
+        log::info("disp size: %dx%d\n", disp->width(), disp->height());
+    }
+
+    http::JpegStreamer stream = http::JpegStreamer("", http_port);
     stream.set_html(html);
     stream.start();
 
-    log::info("http://%s:%d\r\n", stream.host().c_str(), stream.port());
+    log::info("stream ready: http://%s:%d/stream\r\n", stream.host().c_str(), stream.port());
+    uint64_t frame_count = 0;
+    uint64_t t_last = time::ticks_ms();
     while(!app::need_exit())
     {
         // read image from camera
@@ -49,7 +94,18 @@ int _main(int argc, char* argv[])
         stream.write(jpg);
         delete jpg;
 
-        disp.show(*img);
+        if (disp) {
+            disp->show(*img);
+        }
+
+        frame_count++;
+        uint64_t t_now = time::ticks_ms();
+        if (t_now - t_last >= 2000) {
+            const float fps = frame_count * 1000.0f / static_cast<float>(t_now - t_last);
+            log::info("stream fps: %.2f", fps);
+            frame_count = 0;
+            t_last = t_now;
+        }
 
         // free image data, important!
         delete img;
@@ -62,10 +118,11 @@ std::string html =
 "<!DOCTYPE html>\n"
 "<html>\n"
 "<head>\n"
-"    <title>JPG Stream</title>\n"
+"    <title>MaixCam2 Camera Passthrough</title>\n"
 "</head>\n"
 "<body>\n"
-"    <h1>JPG Stream</h1>\n"
+"    <h1>MaixCam2 Camera Passthrough</h1>\n"
+"    <p>This device only streams camera frames. Do all CV and control on PC side.</p>\n"
 "    <img src=\"/stream\" alt=\"Stream\">\n"
 "</body>\n"
 "</html>\n";
