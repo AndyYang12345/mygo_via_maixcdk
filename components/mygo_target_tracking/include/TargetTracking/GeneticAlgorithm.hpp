@@ -20,12 +20,14 @@ struct Genome {
     float d_min = 0.0f;
     float d_max = 2.0f;
 
+    /// 将 PID 参数限制在允许范围内。
     void clamp() {
         p = std::max(p_min, std::min(p, p_max));
         i = std::max(i_min, std::min(i, i_max));
         d = std::max(d_min, std::min(d, d_max));
     }
 
+    /// 按概率添加高斯噪声执行基因突变。
     void mutate(std::mt19937& rng, float rate = 0.2f, float sigma = 0.1f) {
         std::normal_distribution<float> noise(0.0f, sigma);
         std::uniform_real_distribution<float> prob(0.0f, 1.0f);
@@ -35,6 +37,7 @@ struct Genome {
         clamp();
     }
 
+    /// 通过线性混合父代参数生成子代基因。
     static Genome crossover(const Genome& a, const Genome& b, std::mt19937& rng) {
         std::uniform_real_distribution<float> mix(0.0f, 1.0f);
         float t = mix(rng);
@@ -62,11 +65,13 @@ class Population {
 public:
     using FitnessFunc = std::function<float(const Genome&)>;
 
+    /// 创建固定规模种群并初始化随机引擎。
     Population(int size, unsigned int seed = std::random_device{}())
         : _rng(seed), _size(size) {
         _individuals.reserve(size);
     }
 
+    /// 设置自定义适应度函数。
     void set_fitness_function(FitnessFunc func) {
         _fitness = std::move(func);
     }
@@ -109,6 +114,7 @@ public:
         unsigned int seed = 12345;
     };
 
+    /// 载入追踪任务适应度配置并启用内置评估函数。
     void set_tracking_fitness(const TrackingFitnessConfig& cfg) {
         _tracking_config = cfg;
         _fitness = [this](const Genome& genome) {
@@ -116,15 +122,18 @@ public:
         };
     }
 
+    /// 设置变异率与噪声标准差。
     void set_mutation(float rate, float sigma) {
         _mutation_rate = rate;
         _mutation_sigma = sigma;
     }
 
+    /// 设置每代保留的精英个体数量。
     void set_elitism(int elite_count) {
         _elite_count = std::max(0, elite_count);
     }
 
+    /// 在参数边界内随机初始化整个种群。
     void initialize_random(const Genome& base) {
         std::uniform_real_distribution<float> up(0.0f, 1.0f);
         _individuals.clear();
@@ -144,6 +153,7 @@ public:
         }
     }
 
+    /// 对尚未评估个体计算适应度并按分数排序。
     void evaluate_all() {
         if (!_fitness) {
             return;
@@ -157,18 +167,22 @@ public:
         sort_by_fitness();
     }
 
+    /// 返回当前代最优个体。
     const Individual& best() const {
         return _individuals.front();
     }
 
+    /// 返回整个种群只读视图。
     const std::vector<Individual>& individuals() const {
         return _individuals;
     }
 
+    /// 返回当前代编号。
     int generation() const {
         return _generation;
     }
 
+    /// 选择父代、交叉、突变并推进到下一代。
     void evolve_next() {
         if (_individuals.empty()) {
             return;
@@ -215,6 +229,7 @@ private:
     TrackingFitnessConfig _tracking_config;
     std::vector<Individual> _individuals;
 
+    /// 以适应度从高到低排序。
     void sort_by_fitness() {
         std::sort(_individuals.begin(), _individuals.end(),
                   [](const Individual& a, const Individual& b) {
@@ -222,6 +237,7 @@ private:
                   });
     }
 
+    /// 锦标赛选择法抽取父代个体。
     const Individual& tournament_select(int k) {
         std::uniform_int_distribution<int> pick(0, static_cast<int>(_individuals.size()) - 1);
         int best_index = pick(_rng);
@@ -242,6 +258,7 @@ private:
 
     using TargetFunc = std::function<std::pair<float, float>(float)>;
 
+    /// 执行单轴 PID 一步更新，返回新角度。
     float step_pid(float target, float current, float dt, const Genome& g, PidState& state) const {
         float error = target - current;
         state.integral += error * dt;
@@ -260,6 +277,7 @@ private:
         return current + rate * dt;
     }
 
+    /// 在指定目标轨迹下仿真一次追踪并返回代价。
     float simulate_trial(const Genome& genome, const TargetFunc& target_func, bool allow_settle) {
         float current_pitch = _tracking_config.pitch_home;
         float current_yaw = _tracking_config.yaw_home;
@@ -317,6 +335,7 @@ private:
         return cost;
     }
 
+    /// 对一个基因组执行多场景评估并输出适应度。
     float evaluate_tracking_fitness(const Genome& genome) {
         std::mt19937 eval_rng(_tracking_config.seed);
         std::uniform_real_distribution<float> pitch_dist(_tracking_config.target_pitch_min,

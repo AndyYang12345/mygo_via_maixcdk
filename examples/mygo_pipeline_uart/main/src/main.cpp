@@ -846,7 +846,6 @@ int _main(int argc, char *argv[])
     if (invert_yaw) {
         cfg.yaw_error_sign *= -1.0f;
     }
-    cfg.use_laser_for_aim = false;
     cfg.enable_serial = false;
     cfg.draw_overlay = false;
     cfg.print_debug = false;

@@ -1,9 +1,9 @@
 #include "TargetTracking/TargetTracker.hpp"
 #include <iostream>
-#include <iomanip>
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <iomanip>
 #include <opencv2/video/tracking.hpp>
 
 using namespace cv;
@@ -58,6 +58,7 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
         if (update_roi_tracking(frame, result)) {
             target_ready = result.found;
         } else {
+            // ROI tracking失败则回退到完整靶面识别
             roi_tracking_active_ = false;
         }
     }
@@ -72,7 +73,7 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
             cout << "Found " << blobs.size() << " color blobs" << endl;
         }
     
-        if (blobs.size() < 6) {
+        if (blobs.size() < 6) {  // 至少需要6个色块（1个中心 + 5个周围）
             if (config_.print_debug_info) {
                 cout << "Insufficient blobs (" << blobs.size() << "), need at least 6" << endl;
             }
@@ -115,10 +116,12 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
         result.target_center = target_blob->center;
         last_board_position_ = result.board_center;
     
+        // 计算距离和角度
         Point2f delta = target_blob->center - center_blob->center;
         result.distance = norm(delta);
         result.angle = atan2(delta.y, delta.x) * 180.0f / CV_PI;
     
+        // 更新统计信息
         successful_tracks_++;
         if (config_.print_debug_info) {
             cout << "SUCCESS: Target found!" << endl;
@@ -128,19 +131,22 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
             cout << "  Angle: " << result.angle << " degrees" << endl;
         }
     
+        // 初始化ROI跟踪
         init_roi_tracking(frame, *target_blob);
 
+        // Step 5: 调试显示
         if (config_.show_debug_windows) {
             Mat debug_frame = frame.clone();
             draw_debug_info(debug_frame, blobs, center_blob, target_blob);
-
+        
+            // 显示中间结果
             vector<Mat> debug_images;
             debug_images.push_back(debug_frame);
             debug_images.push_back(debug_mask);
-
+        
             Mat combined;
             hconcat(debug_images, combined);
-
+        
             resize(combined, combined, Size(), 0.5, 0.5);
             imshow("Target Tracker Debug", combined);
             waitKey(1);
@@ -167,11 +173,19 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
             if (result.laser_found) {
                 cv::circle(laser_vis, result.laser_center, 5, cv::Scalar(0, 255, 255), 2);
             }
-            imshow("Laser Dot Mask", laser_vis);
-            waitKey(1);
+            cv::imshow("Laser Dot Mask", laser_vis);
+            cv::waitKey(1);
         }
     }
 
+    if (!result.laser_found && has_previous_laser_) {
+        // 激光短时丢失时保留状态，避免跳变
+        if (config_.print_debug_info) {
+            cout << "[LASER] lost in current frame, previous tracked center: ("
+                 << last_laser_position_.x << ", " << last_laser_position_.y << ")" << endl;
+        }
+    }
+    
     return result;
 }
 
@@ -198,7 +212,7 @@ bool TargetTracker::detect_laser_dot(const cv::Mat& frame,
     cv::Mat hsv;
     cv::cvtColor(frame, hsv, cv::COLOR_BGR2HSV);
 
-    cv::Mat mask1, mask2;
+    cv::Mat mask1, mask2, sat_mask, val_mask;
     cv::inRange(hsv,
                 cv::Scalar(config_.laser_hue_low_1, config_.laser_min_saturation, config_.laser_min_value),
                 cv::Scalar(config_.laser_hue_high_1, 255, 255),
@@ -219,6 +233,7 @@ bool TargetTracker::detect_laser_dot(const cv::Mat& frame,
 
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
     if (contours.empty()) {
         return false;
     }
@@ -558,7 +573,6 @@ vector<ColorBlob> TargetTracker::extract_color_blobs(const Mat& frame, Mat& debu
         Mat roi = frame(blob.bounding_rect);
         blob.mean_color_bgr = mean(roi);
         blob.mean_color_hsv = bgr_to_hsv(blob.mean_color_bgr);
-        blob.mean_color_lab = bgr_to_lab(blob.mean_color_bgr);
         
         // 判断是否为深色
         blob.is_dark = is_dark_color(blob.mean_color_bgr, config_.dark_brightness_threshold);

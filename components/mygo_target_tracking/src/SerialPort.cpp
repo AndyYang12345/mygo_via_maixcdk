@@ -1,82 +1,5 @@
 #include "TargetTracking/SerialPort.hpp"
 
-#ifdef MYGO_TARGETTRACKING_USE_MAIX
-
-#include "maix_uart.hpp"
-
-class SerialPort::MaixUartImpl {
-public:
-    std::unique_ptr<maix::peripheral::uart::UART> uart;
-    int baudrate = 115200;
-};
-
-SerialPort::SerialPort() : uart_impl_(std::make_unique<MaixUartImpl>()) {}
-
-SerialPort::~SerialPort() {
-    close();
-}
-
-bool SerialPort::open(const std::string& device, int baudrate) {
-    close();
-    device_ = device;
-    uart_impl_->baudrate = baudrate;
-    uart_impl_->uart = std::make_unique<maix::peripheral::uart::UART>(
-        device,
-        baudrate,
-        maix::peripheral::uart::BITS_8,
-        maix::peripheral::uart::PARITY_NONE,
-        maix::peripheral::uart::STOP_1,
-        maix::peripheral::uart::FLOW_CTRL_NONE
-    );
-    return uart_impl_->uart != nullptr && uart_impl_->uart->is_open();
-}
-
-void SerialPort::close() {
-    if (uart_impl_ && uart_impl_->uart) {
-        uart_impl_->uart->close();
-        uart_impl_->uart.reset();
-    }
-}
-
-bool SerialPort::is_open() const {
-    return uart_impl_ && uart_impl_->uart && uart_impl_->uart->is_open();
-}
-
-bool SerialPort::set_baudrate(int baudrate) {
-    if (!uart_impl_) {
-        return false;
-    }
-    uart_impl_->baudrate = baudrate;
-    if (!is_open()) {
-        return true;
-    }
-    return open(device_, baudrate);
-}
-
-bool SerialPort::write_bytes(const uint8_t* data, size_t size) {
-    if (!is_open() || data == nullptr || size == 0) {
-        return false;
-    }
-    return uart_impl_->uart->write(data, static_cast<int>(size)) >= 0;
-}
-
-bool SerialPort::write_string(const std::string& data) {
-    if (!is_open() || data.empty()) {
-        return false;
-    }
-    return uart_impl_->uart->write(data) >= 0;
-}
-
-bool SerialPort::configure_port(int baudrate) {
-    return set_baudrate(baudrate);
-}
-
-int SerialPort::to_termios_baud(int baudrate) {
-    return baudrate;
-}
-
-#else
-
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -182,5 +105,3 @@ int SerialPort::to_termios_baud(int baudrate) {
         default: return 0;
     }
 }
-
-#endif
