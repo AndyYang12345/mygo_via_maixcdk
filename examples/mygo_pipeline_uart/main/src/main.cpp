@@ -796,7 +796,7 @@ private:
 int _main(int argc, char *argv[])
 {
     int frame_width = 640;
-    int frame_height = 480;
+    int frame_height = 640;
     int tcp_port = 5555;
     std::string cmd_log_path = "servo_command_debug.csv";
     bool invert_pitch = false;
@@ -833,9 +833,15 @@ int _main(int argc, char *argv[])
     cfg.cx = static_cast<float>(frame_width) * 0.5f;
     cfg.cy = static_cast<float>(frame_height) * 0.5f;
     cfg.pitch_home = 60.0f;
-    cfg.yaw_home = 270.0f;
+    // 与 test_gimbal_control 对齐：PWM=1500 对应 135deg（正前方）
+    cfg.yaw_home = 135.0f;
     cfg.pitch_pwm_zero_angle = cfg.pitch_home;
-    cfg.yaw_pwm_zero_angle = cfg.yaw_home;
+    cfg.yaw_pwm_zero_angle = 135.0f;
+    cfg.pid_kp = 18.40262f;
+    cfg.pid_ki = 0.05f;
+    cfg.pid_kd = 0.307062f;
+    cfg.scan_yaw_freq = 0.08f;
+    cfg.scan_pitch_freq = 0.10f;
     // Real device observation: larger yaw PWM turns camera left, larger pitch PWM turns camera up.
     // These signs map image error to that physical motion model.
     cfg.pitch_error_sign = -1.0f;
