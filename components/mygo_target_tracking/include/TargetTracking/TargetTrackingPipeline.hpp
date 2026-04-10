@@ -52,6 +52,7 @@ struct PipelineConfig {
     // Output behavior
     bool draw_overlay = true;
     bool print_debug = false;
+    bool control_enabled = true;
 
     // Serial
     bool enable_serial = false;
@@ -95,6 +96,11 @@ public:
     /// 获取目标检测器配置。
     TrackerConfig get_tracker_config() const;
 
+    /// 设置控制使能。
+    void set_control_enabled(bool enabled);
+    /// 显式切换到追踪状态。
+    void start_tracking();
+
     /// 重置状态机、PID和扫描时间。
     void reset();
     /// 处理按键事件（例如空格触发状态切换）。
@@ -137,6 +143,7 @@ private:
     void apply_pid_gains_from_config();
 
     PipelineConfig config_;
+    bool control_enabled_ = true;
     TrackState state_ = TrackState::Waiting;
     int lock_count_ = 0;
     int lost_count_ = 0;

@@ -2,6 +2,7 @@
 #include "maix_camera.hpp"
 #include "maix_display.hpp"
 #include "maix_image_cv.hpp"
+#include "maix_jpg_stream.hpp"
 #include "maix_key.hpp"
 #include "main.h"
 
@@ -65,15 +66,32 @@ struct VisionStatusSnapshot {
     VisionAppState app_state{VisionAppState::Idle};
     std::string tracking_state{"Stopped"};
     bool active{false};
+    bool tracking_enabled{false};
     bool target_found{false};
     bool laser_found{false};
     std::string command;
 };
 
 struct PendingControl {
-    bool start_requested{false};
+    bool recognition_start_requested{false};
+    bool tracking_start_requested{false};
     bool stop_requested{false};
 };
+
+const char *kStreamHtml = R"HTML(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>MyGo Pipeline Stream</title>
+</head>
+<body>
+    <h1>MyGo Pipeline Stream</h1>
+    <p>Low-rate background JPEG stream from MaixCam2.</p>
+    <img src="/stream" alt="Stream">
+</body>
+</html>
+)HTML";
 
 float clamp_value(float value, float low, float high)
 {
@@ -720,11 +738,18 @@ private:
             case CMD_APP_INFO:
                 return encode_resp_ok(frame.cmd, encode_app_info_body());
             case CMD_START_APP:
+                if (!matches_current_app(frame.body)) {
+                    return encode_resp_err(frame.cmd, 1, "app_id not match");
+                }
+                control.recognition_start_requested = true;
+                control.stop_requested = false;
+                return encode_resp_ok(frame.cmd, {});
             case APP_CMD_VISION_START:
                 if (!matches_current_app(frame.body)) {
                     return encode_resp_err(frame.cmd, 1, "app_id not match");
                 }
-                control.start_requested = true;
+                control.recognition_start_requested = true;
+                control.tracking_start_requested = true;
                 control.stop_requested = false;
                 return encode_resp_ok(frame.cmd, {});
             case CMD_EXIT_APP:
@@ -733,7 +758,8 @@ private:
                     return encode_resp_err(frame.cmd, 1, "app_id not match");
                 }
                 control.stop_requested = true;
-                control.start_requested = false;
+                control.recognition_start_requested = false;
+                control.tracking_start_requested = false;
                 return encode_resp_ok(frame.cmd, {});
             case APP_CMD_VISION_STATUS:
                 return encode_resp_ok(frame.cmd, encode_status_body(snapshot));
@@ -837,14 +863,14 @@ int _main(int argc, char *argv[])
     cfg.yaw_home = 135.0f;
     cfg.pitch_pwm_zero_angle = cfg.pitch_home;
     cfg.yaw_pwm_zero_angle = 135.0f;
-    cfg.pid_kp = 18.40262f;
-    cfg.pid_ki = 0.05f;
-    cfg.pid_kd = 0.307062f;
+    cfg.pid_kp = 2.0f;
+    cfg.pid_ki = 0.0f;
+    cfg.pid_kd = 0.0f;
     cfg.scan_yaw_freq = 0.08f;
     cfg.scan_pitch_freq = 0.10f;
     // Real device observation: larger yaw PWM turns camera left, larger pitch PWM turns camera up.
     // These signs map image error to that physical motion model.
-    cfg.pitch_error_sign = -1.0f;
+    cfg.pitch_error_sign = 1.0f;
     cfg.yaw_error_sign = 1.0f;
     if (invert_pitch) {
         cfg.pitch_error_sign *= -1.0f;
@@ -881,7 +907,8 @@ int _main(int argc, char *argv[])
     }
 
     VisionAppState app_state = VisionAppState::Idle;
-    bool task_active = false;
+    bool recognition_active = false;
+    bool tracking_enabled = false;
     uint64_t run_start_ms = time::ticks_ms();
     uint64_t frame_index = 0;
     uint64_t last_tick_ms = time::ticks_ms();
@@ -890,21 +917,32 @@ int _main(int argc, char *argv[])
     last_output.state = TrackState::Waiting;
     last_output.command.clear();
 
+    constexpr int kStreamPort = 8000;
+    constexpr uint64_t kStreamIntervalMs = 200;
+    http::JpegStreamer stream("", kStreamPort);
+    stream.set_html(kStreamHtml);
+    stream.start();
+    log::info("background stream ready: http://%s:%d/stream", stream.host().c_str(), stream.port());
+    uint64_t last_stream_ms = time::ticks_ms();
+
     while (!app::need_exit()) {
         PendingControl control;
         VisionStatusSnapshot snapshot;
         snapshot.app_state = app_state;
-        snapshot.tracking_state = task_active ? state_to_text(last_output.state) : "Stopped";
-        snapshot.active = task_active;
-        snapshot.target_found = task_active ? last_output.target_found : false;
-        snapshot.laser_found = task_active ? last_output.laser_found : false;
-        snapshot.command = task_active ? last_output.command : "";
+        snapshot.tracking_state = recognition_active ? state_to_text(last_output.state) : "Stopped";
+        snapshot.active = recognition_active;
+        snapshot.tracking_enabled = tracking_enabled;
+        snapshot.target_found = recognition_active ? last_output.target_found : false;
+        snapshot.laser_found = recognition_active ? last_output.laser_found : false;
+        snapshot.command = tracking_enabled ? last_output.command : "";
         tcp_server.poll(snapshot, control);
 
         if (control.stop_requested) {
-            task_active = false;
+            recognition_active = false;
+            tracking_enabled = false;
             app_state = VisionAppState::Stopped;
             pipeline.reset();
+            pipeline.set_control_enabled(false);
             last_output = PipelineOutput();
             last_output.state = TrackState::Waiting;
             last_output.command.clear();
@@ -912,13 +950,24 @@ int _main(int argc, char *argv[])
             log::info("vision task stopped by tcp command");
         }
 
-        if (control.start_requested) {
+        if (control.recognition_start_requested) {
             pipeline.reset();
+            pipeline.set_control_enabled(false);
             pipeline.handle_key(' ');
-            task_active = true;
+            recognition_active = true;
+            tracking_enabled = false;
             app_state = VisionAppState::Running;
             last_state = TrackState::Waiting;
             log::info("vision task started by tcp command");
+        }
+
+        if (control.tracking_start_requested) {
+            recognition_active = true;
+            tracking_enabled = true;
+            pipeline.set_control_enabled(true);
+            pipeline.start_tracking();
+            app_state = VisionAppState::Running;
+            log::info("vision tracking enabled by tcp command");
         }
 
         image::Image *img = cam.read();
@@ -937,9 +986,10 @@ int _main(int argc, char *argv[])
         out.state = TrackState::Waiting;
         out.command.clear();
 
-        if (task_active) {
+        if (recognition_active) {
             cv::Mat frame;
             maix::image::image2cv(*img, frame, true, true);
+            pipeline.set_control_enabled(tracking_enabled);
             out = pipeline.process_frame(frame, dt);
 
             if (out.state != last_state) {
@@ -948,8 +998,8 @@ int _main(int argc, char *argv[])
                           state_to_text(out.state));
             }
 
-            if (auto_start_tracking && out.state == TrackState::Locked) {
-                pipeline.handle_key(' ');
+            if (auto_start_tracking && tracking_enabled && out.state == TrackState::Locked) {
+                pipeline.start_tracking();
                 log::info("[AUTO] Locked -> Tracking");
             }
             last_state = out.state;
@@ -959,6 +1009,15 @@ int _main(int argc, char *argv[])
         }
 
         last_output = out;
+
+        if (recognition_active && (now_tick_ms - last_stream_ms) >= kStreamIntervalMs) {
+            image::Image *jpg = img->to_jpeg();
+            if (jpg) {
+                stream.write(jpg);
+                delete jpg;
+            }
+            last_stream_ms = now_tick_ms;
+        }
 
         if (cmd_log.is_open()) {
             std::string command_clean = out.command;
@@ -971,7 +1030,7 @@ int _main(int argc, char *argv[])
                     << frame_index << ","
                     << vision_app_state_to_text(app_state) << ","
                     << state_to_text(out.state) << ","
-                    << (task_active ? 1 : 0) << ","
+                    << (recognition_active ? 1 : 0) << ","
                     << (out.target_found ? 1 : 0) << ","
                     << (out.laser_found ? 1 : 0) << ",\""
                     << command_clean << "\"\n";
@@ -981,13 +1040,15 @@ int _main(int argc, char *argv[])
         draw_pipeline_overlay(*img,
                               out,
                               app_state,
-                              task_active,
+                              recognition_active,
                               tcp_server.is_listening(),
                               tcp_server.is_client_connected(),
                               tcp_port);
         disp.show(*img, image::FIT_COVER);
         delete img;
     }
+
+    stream.stop();
 
     return 0;
 }

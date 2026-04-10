@@ -7,6 +7,7 @@
 #include <sstream>
 
 TargetTrackingPipeline::TargetTrackingPipeline() {
+    control_enabled_ = config_.control_enabled;
     gimbal_.set_pitch_zero_angle_deg(config_.pitch_pwm_zero_angle);
     gimbal_.set_yaw_zero_angle_deg(config_.yaw_pwm_zero_angle);
     apply_pid_gains_from_config();
@@ -16,6 +17,7 @@ TargetTrackingPipeline::TargetTrackingPipeline() {
 
 void TargetTrackingPipeline::set_config(const PipelineConfig& config) {
     config_ = config;
+    control_enabled_ = config_.control_enabled;
     gimbal_.set_pitch_zero_angle_deg(config_.pitch_pwm_zero_angle);
     gimbal_.set_yaw_zero_angle_deg(config_.yaw_pwm_zero_angle);
     apply_pid_gains_from_config();
@@ -33,6 +35,25 @@ void TargetTrackingPipeline::set_tracker_config(const TrackerConfig& config) {
 
 TrackerConfig TargetTrackingPipeline::get_tracker_config() const {
     return tracker_.get_config();
+}
+
+void TargetTrackingPipeline::set_control_enabled(bool enabled) {
+    control_enabled_ = enabled;
+    config_.control_enabled = enabled;
+    if (!enabled) {
+        pitch_speed_ = 0.0f;
+        yaw_speed_ = 0.0f;
+        reset_pid(pid_pitch_);
+        reset_pid(pid_yaw_);
+    }
+}
+
+void TargetTrackingPipeline::start_tracking() {
+    state_ = TrackState::Tracking;
+    lock_count_ = 0;
+    lost_count_ = 0;
+    reset_pid(pid_pitch_);
+    reset_pid(pid_yaw_);
 }
 
 void TargetTrackingPipeline::reset() {
@@ -166,7 +187,10 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             }
         }
     } else if (state_ == TrackState::Tracking) {
-        if (has_target) {
+        if (!control_enabled_) {
+            pitch_speed_ = 0.0f;
+            yaw_speed_ = 0.0f;
+        } else if (has_target) {
             float dx = 0.0f;
             float dy = 0.0f;
             dx = target_pos.x - cx;
@@ -221,11 +245,13 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     gimbal_.set_yaw_angle(yaw_angle_);
     gimbal_.set_pitch_speed(std::abs(pitch_speed_));
     gimbal_.set_yaw_speed(std::abs(yaw_speed_));
-    gimbal_.get_command();
-
-    const std::string cmd = gimbal_.get_command_buffer();
-    if (config_.enable_serial && gimbal_.is_serial_open()) {
-        gimbal_.send_command();
+    std::string cmd;
+    if (control_enabled_) {
+        gimbal_.get_command();
+        cmd = gimbal_.get_command_buffer();
+        if (config_.enable_serial && gimbal_.is_serial_open()) {
+            gimbal_.send_command();
+        }
     }
 
     output.state = state_;
