@@ -40,7 +40,7 @@ struct PipelineConfig {
     int lost_required = 10;
 
     // Search scan parameters
-    float scan_yaw_amp = 60.0f;
+    float scan_yaw_amp = 30.0f;
     float scan_pitch_amp = 30.0f;
     float scan_yaw_freq = 0.15f;   // Hz
     float scan_pitch_freq = 0.10f; // Hz
@@ -100,6 +100,8 @@ public:
     void set_control_enabled(bool enabled);
     /// 显式切换到追踪状态。
     void start_tracking();
+    /// 外部注入当前姿态，作为追踪初始角度。
+    void set_current_angles(float pitch_deg, float yaw_deg);
 
     /// 重置状态机、PID和扫描时间。
     void reset();

@@ -67,8 +67,11 @@ struct VisionStatusSnapshot {
     std::string tracking_state{"Stopped"};
     bool active{false};
     bool tracking_enabled{false};
+    bool can_scan{false};
     bool target_found{false};
     bool laser_found{false};
+    int target_x{-1};
+    int target_y{-1};
     std::string command;
 };
 
@@ -76,7 +79,17 @@ struct PendingControl {
     bool recognition_start_requested{false};
     bool tracking_start_requested{false};
     bool stop_requested{false};
+    bool tracking_init_pose_valid{false};
+    int init_yaw_pwm{1500};
+    int init_pitch_pwm{1500};
 };
+
+float pwm_to_angle_deg(int pwm, float zero_angle_deg)
+{
+    constexpr float kPwmPerDeg = 2000.0f / 270.0f;
+    const float delta_deg = (static_cast<float>(pwm) - 1500.0f) / kPwmPerDeg;
+    return std::clamp(zero_angle_deg + delta_deg, 0.0f, 270.0f);
+}
 
 const char *kStreamHtml = R"HTML(
 <!DOCTYPE html>
@@ -690,6 +703,10 @@ private:
         append_cstr(body, snapshot.target_found ? "1" : "0");
         append_cstr(body, snapshot.laser_found ? "1" : "0");
         append_cstr(body, snapshot.command);
+        append_cstr(body, snapshot.tracking_enabled ? "1" : "0");
+        append_cstr(body, snapshot.can_scan ? "1" : "0");
+        append_cstr(body, std::to_string(snapshot.target_x));
+        append_cstr(body, std::to_string(snapshot.target_y));
         return body;
     }
 
@@ -751,6 +768,13 @@ private:
                 control.recognition_start_requested = true;
                 control.tracking_start_requested = true;
                 control.stop_requested = false;
+                if (frame.body.size() >= 5 && frame.body[0] == 0xFE) {
+                    const int yaw_pwm = static_cast<int>(read_u16_le(frame.body.data() + 1));
+                    const int pitch_pwm = static_cast<int>(read_u16_le(frame.body.data() + 3));
+                    control.init_yaw_pwm = std::clamp(yaw_pwm, 500, 2500);
+                    control.init_pitch_pwm = std::clamp(pitch_pwm, 500, 2500);
+                    control.tracking_init_pose_valid = true;
+                }
                 return encode_resp_ok(frame.cmd, {});
             case CMD_EXIT_APP:
             case APP_CMD_VISION_STOP:
@@ -858,10 +882,10 @@ int _main(int argc, char *argv[])
     cfg.fy = 381.625f;
     cfg.cx = static_cast<float>(frame_width) * 0.5f;
     cfg.cy = static_cast<float>(frame_height) * 0.5f;
-    cfg.pitch_home = 60.0f;
     // 与 test_gimbal_control 对齐：PWM=1500 对应 135deg（正前方）
+    cfg.pitch_home = 135.0f;
     cfg.yaw_home = 135.0f;
-    cfg.pitch_pwm_zero_angle = cfg.pitch_home;
+    cfg.pitch_pwm_zero_angle = 135.0f;
     cfg.yaw_pwm_zero_angle = 135.0f;
     cfg.pid_kp = 2.0f;
     cfg.pid_ki = 0.0f;
@@ -932,8 +956,15 @@ int _main(int argc, char *argv[])
         snapshot.tracking_state = recognition_active ? state_to_text(last_output.state) : "Stopped";
         snapshot.active = recognition_active;
         snapshot.tracking_enabled = tracking_enabled;
+        snapshot.can_scan = recognition_active && !tracking_enabled;
         snapshot.target_found = recognition_active ? last_output.target_found : false;
         snapshot.laser_found = recognition_active ? last_output.laser_found : false;
+        snapshot.target_x = (recognition_active && last_output.target_found)
+                    ? static_cast<int>(std::lround(last_output.target_pos.x))
+                    : -1;
+        snapshot.target_y = (recognition_active && last_output.target_found)
+                    ? static_cast<int>(std::lround(last_output.target_pos.y))
+                    : -1;
         snapshot.command = tracking_enabled ? last_output.command : "";
         tcp_server.poll(snapshot, control);
 
@@ -950,7 +981,30 @@ int _main(int argc, char *argv[])
             log::info("vision task stopped by tcp command");
         }
 
-        if (control.recognition_start_requested) {
+        if (control.tracking_start_requested) {
+            if (!recognition_active) {
+                pipeline.reset();
+                pipeline.set_control_enabled(false);
+                pipeline.handle_key(' ');
+                recognition_active = true;
+                last_state = TrackState::Waiting;
+            }
+            tracking_enabled = true;
+            pipeline.set_control_enabled(true);
+            if (control.tracking_init_pose_valid) {
+                const float yaw_deg = pwm_to_angle_deg(control.init_yaw_pwm, cfg.yaw_pwm_zero_angle);
+                const float pitch_deg = pwm_to_angle_deg(control.init_pitch_pwm, cfg.pitch_pwm_zero_angle);
+                pipeline.set_current_angles(pitch_deg, yaw_deg);
+                log::info("tracking init pose from host pwm: yaw=%d(%.2fdeg) pitch=%d(%.2fdeg)",
+                          control.init_yaw_pwm,
+                          yaw_deg,
+                          control.init_pitch_pwm,
+                          pitch_deg);
+            }
+            pipeline.start_tracking();
+            app_state = VisionAppState::Running;
+            log::info("vision tracking enabled by tcp command");
+        } else if (control.recognition_start_requested) {
             pipeline.reset();
             pipeline.set_control_enabled(false);
             pipeline.handle_key(' ');
@@ -959,15 +1013,6 @@ int _main(int argc, char *argv[])
             app_state = VisionAppState::Running;
             last_state = TrackState::Waiting;
             log::info("vision task started by tcp command");
-        }
-
-        if (control.tracking_start_requested) {
-            recognition_active = true;
-            tracking_enabled = true;
-            pipeline.set_control_enabled(true);
-            pipeline.start_tracking();
-            app_state = VisionAppState::Running;
-            log::info("vision tracking enabled by tcp command");
         }
 
         image::Image *img = cam.read();
@@ -1010,15 +1055,6 @@ int _main(int argc, char *argv[])
 
         last_output = out;
 
-        if (recognition_active && (now_tick_ms - last_stream_ms) >= kStreamIntervalMs) {
-            image::Image *jpg = img->to_jpeg();
-            if (jpg) {
-                stream.write(jpg);
-                delete jpg;
-            }
-            last_stream_ms = now_tick_ms;
-        }
-
         if (cmd_log.is_open()) {
             std::string command_clean = out.command;
             for (char &ch : command_clean) {
@@ -1044,6 +1080,16 @@ int _main(int argc, char *argv[])
                               tcp_server.is_listening(),
                               tcp_server.is_client_connected(),
                               tcp_port);
+
+        if (recognition_active && (now_tick_ms - last_stream_ms) >= kStreamIntervalMs) {
+            image::Image *jpg = img->to_jpeg();
+            if (jpg) {
+                stream.write(jpg);
+                delete jpg;
+            }
+            last_stream_ms = now_tick_ms;
+        }
+
         disp.show(*img, image::FIT_COVER);
         delete img;
     }

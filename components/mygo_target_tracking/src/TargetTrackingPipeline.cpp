@@ -56,6 +56,13 @@ void TargetTrackingPipeline::start_tracking() {
     reset_pid(pid_yaw_);
 }
 
+void TargetTrackingPipeline::set_current_angles(float pitch_deg, float yaw_deg) {
+    pitch_angle_ = clamp_value(pitch_deg, 0.0f, 270.0f);
+    yaw_angle_ = clamp_value(yaw_deg, 0.0f, 270.0f);
+    pitch_speed_ = 0.0f;
+    yaw_speed_ = 0.0f;
+}
+
 void TargetTrackingPipeline::reset() {
     state_ = TrackState::Waiting;
     lock_count_ = 0;

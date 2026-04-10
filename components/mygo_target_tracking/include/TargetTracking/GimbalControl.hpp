@@ -151,13 +151,10 @@ public:
 
         std::ostringstream oss;
         oss << "{"
-            << "P" << std::setw(4) << std::setfill('0') << yaw_pwm
-            << "T" << std::setw(4) << std::setfill('0') << yaw_t
-            << "P1350T1000"
-            << "P2300T1000"
-            << "P" << std::setw(4) << std::setfill('0') << pitch_pwm
-            << "T" << std::setw(4) << std::setfill('0') << pitch_t
-            << "P1500T1000"
+            << "#000P" << std::setw(4) << std::setfill('0') << yaw_pwm
+            << "T" << std::setw(4) << std::setfill('0') << yaw_t << "!"
+            << "#003P" << std::setw(4) << std::setfill('0') << pitch_pwm
+            << "T" << std::setw(4) << std::setfill('0') << pitch_t << "!"
             << "}";
         _command_buffer = oss.str();
         std::cout << "Generated command: " << _command_buffer << std::endl;
