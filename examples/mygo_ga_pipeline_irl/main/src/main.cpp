@@ -55,6 +55,8 @@ constexpr const char *kAppDesc = "Online GA PID training with TCP control/status
 constexpr int kPopulationSize = 10;
 constexpr int kGenerationCount = 20;
 constexpr float kSampleDurationSec = 30.0f;
+constexpr float kPidPMin = 2.0f;
+constexpr float kPidPMax = 3.5f;
 constexpr float kCenterHitThresholdPx = 18.0f;
 constexpr float kLaserHitThresholdPx = 30.0f;
 constexpr int kLostReturnToStartFrames = 4;
@@ -916,6 +918,8 @@ int _main(int argc, char *argv[])
     genomes.reserve(kPopulationSize);
 
     Genome base;
+    base.p_min = kPidPMin;
+    base.p_max = kPidPMax;
     std::uniform_real_distribution<float> up(0.0f, 1.0f);
     for (int i = 0; i < kPopulationSize; ++i) {
         Genome g = base;

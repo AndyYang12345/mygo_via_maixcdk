@@ -9,12 +9,12 @@
 #include <vector>
 
 struct Genome {
-    float p = 0.8f;
+    float p = 2.5f;
     float i = 0.0f;
     float d = 0.15f;
 
-    float p_min = 0.0f;
-    float p_max = 12.0f;
+    float p_min = 2.0f;
+    float p_max = 3.5f;
     float i_min = 0.0f;
     float i_max = 2.0f;
     float d_min = 0.0f;
