@@ -41,11 +41,18 @@ struct TrackerConfig {
 
     // ROI 跟踪参数
     int roi_padding = 80;
+    int roi_max_padding = 180;
+    float roi_velocity_padding_gain = 1.2f;
     int roi_min_blob_area = 200;
     int roi_max_blob_area = 8000;
     int roi_hue_threshold = 12;   // 0-180
     int roi_sat_threshold = 60;   // 0-255
     int roi_val_threshold = 60;   // 0-255
+    float roi_distance_score_weight = 1.2f;
+    float roi_color_score_weight = 0.9f;
+    float roi_area_score_weight = 0.4f;
+    float roi_circularity_reject_threshold = 0.82f;
+    float roi_center_reject_radius = 45.0f;
     bool use_kalman = true;
     float kalman_dt = 1.0f / 30.0f;
 
@@ -158,6 +165,8 @@ private:
     int successful_tracks_;
     bool has_previous_target_;
     cv::Point2f last_target_position_;
+    cv::Point2f startup_target_position_;
+    bool has_startup_target_position_ = false;
     cv::Point2f last_board_position_;
     bool has_previous_laser_ = false;
     cv::Point2f last_laser_position_{-1.0f, -1.0f};
@@ -184,7 +193,11 @@ private:
     /// 在ROI内更新目标位置并回写结果。
     bool update_roi_tracking(const cv::Mat& frame, TargetInfo& result);
     /// 在给定ROI内执行目标色块检测。
-    bool detect_target_in_roi(const cv::Mat& frame, const cv::Rect& roi, cv::Point2f& out_center) const;
+    bool detect_target_in_roi(const cv::Mat& frame,
+                              const cv::Rect& roi,
+                              const cv::Point2f& expected_center_global,
+                              cv::Point2f& out_center,
+                              bool& rejected_by_circular_shape);
     /// 在目标附近检测激光红点位置。
     bool detect_laser_dot(const cv::Mat& frame,
                           const cv::Point2f& target_hint,
