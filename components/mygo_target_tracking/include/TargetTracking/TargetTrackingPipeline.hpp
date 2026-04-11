@@ -42,8 +42,8 @@ struct PipelineConfig {
     // Search scan parameters
     float scan_yaw_amp = 30.0f;
     float scan_pitch_amp = 30.0f;
-    float scan_yaw_freq = 0.15f;   // Hz
-    float scan_pitch_freq = 0.10f; // Hz
+    float scan_yaw_freq = 0.1f;   // Hz
+    float scan_pitch_freq = 0.15f; // Hz
     // yaw 默认从中心起扫（1500PWM 对应零位），随后左右震荡
     float scan_yaw_phase = 0.0f;
     // pitch 默认从上方向下扫（围绕零位/1500PWM往返）
