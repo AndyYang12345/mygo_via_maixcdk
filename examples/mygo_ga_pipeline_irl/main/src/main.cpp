@@ -55,9 +55,13 @@ constexpr const char *kAppDesc = "Online GA PID training with TCP control/status
 constexpr int kPopulationSize = 10;
 constexpr int kGenerationCount = 20;
 constexpr float kSampleDurationSec = 30.0f;
-constexpr float kLockWaitTimeoutSec = 15.0f;
 constexpr float kCenterHitThresholdPx = 18.0f;
 constexpr float kLaserHitThresholdPx = 30.0f;
+constexpr int kLostReturnToStartFrames = 4;
+constexpr float kMutationRateStart = 0.16f;
+constexpr float kMutationRateEnd = 0.06f;
+constexpr float kMutationSigmaStart = 0.06f;
+constexpr float kMutationSigmaEnd = 0.02f;
 
 enum class VisionAppState {
     Idle,
@@ -68,7 +72,6 @@ enum class VisionAppState {
 enum class TrainingPhase {
     Idle,
     PrepareSample,
-    WaitLock,
     TrackingSample,
     Finished,
 };
@@ -684,7 +687,6 @@ void draw_training_overlay(image::Image &img,
 
     std::string phase_text = "idle";
     if (phase == TrainingPhase::PrepareSample) phase_text = "prepare";
-    else if (phase == TrainingPhase::WaitLock) phase_text = "wait-lock";
     else if (phase == TrainingPhase::TrackingSample) phase_text = "tracking";
     else if (phase == TrainingPhase::Finished) phase_text = "finished";
 
@@ -712,6 +714,64 @@ void draw_training_overlay(image::Image &img,
                     " center_hit=" + std::to_string(metrics.center_hit_frames),
                     image::COLOR_WHITE,
                     1.0f);
+
+    if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
+        img.draw_rect(static_cast<int>(out.target_pos.x) - 3,
+                      static_cast<int>(out.target_pos.y) - 3,
+                      7,
+                      7,
+                      image::Color::from_rgb(255, 64, 64),
+                      2);
+        img.draw_string(static_cast<int>(out.target_pos.x) + 6,
+                        static_cast<int>(out.target_pos.y) - 10,
+                        "target",
+                        image::Color::from_rgb(255, 64, 64),
+                        1.0f);
+    }
+
+    if (out.roi_active && out.roi_rect.width > 0 && out.roi_rect.height > 0) {
+        img.draw_rect(out.roi_rect.x,
+                      out.roi_rect.y,
+                      out.roi_rect.width,
+                      out.roi_rect.height,
+                      image::Color::from_rgb(64, 160, 255),
+                      1);
+    }
+
+    if (out.laser_found && out.laser_pos.x >= 0.0f && out.laser_pos.y >= 0.0f) {
+        img.draw_rect(static_cast<int>(out.laser_pos.x) - 3,
+                      static_cast<int>(out.laser_pos.y) - 3,
+                      7,
+                      7,
+                      image::Color::from_rgb(255, 255, 0),
+                      2);
+        img.draw_string(static_cast<int>(out.laser_pos.x) + 6,
+                        static_cast<int>(out.laser_pos.y) - 10,
+                        "laser",
+                        image::Color::from_rgb(255, 255, 0),
+                        1.0f);
+    }
+
+    if (out.target_found && out.laser_found) {
+        img.draw_line(static_cast<int>(out.target_pos.x),
+                      static_cast<int>(out.target_pos.y),
+                      static_cast<int>(out.laser_pos.x),
+                      static_cast<int>(out.laser_pos.y),
+                      image::Color::from_rgb(0, 220, 120),
+                      2);
+    }
+
+    if (out.aim_pos.x >= 0.0f && out.aim_pos.y >= 0.0f) {
+        const int aim_x = static_cast<int>(out.aim_pos.x);
+        const int aim_y = static_cast<int>(out.aim_pos.y);
+        img.draw_line(aim_x - 8, aim_y, aim_x + 8, aim_y, image::Color::from_rgb(0, 200, 255), 1);
+        img.draw_line(aim_x, aim_y - 8, aim_x, aim_y + 8, image::Color::from_rgb(0, 200, 255), 1);
+        img.draw_string(aim_x + 10,
+                        aim_y - 10,
+                        out.aim_from_laser ? "aim:laser" : "aim:center",
+                        image::Color::from_rgb(0, 200, 255),
+                        1.0f);
+    }
 }
 
 void write_generation_report(const std::string &log_dir,
@@ -825,6 +885,10 @@ int _main(int argc, char *argv[])
     cfg.pid_kp = 2.0f;
     cfg.pid_ki = 0.0f;
     cfg.pid_kd = 0.0f;
+    cfg.scan_yaw_freq = 0.08f;
+    cfg.scan_pitch_freq = 0.10f;
+    cfg.pitch_error_sign = 1.0f;
+    cfg.yaw_error_sign = 1.0f;
     cfg.enable_serial = false;
     cfg.draw_overlay = false;
     cfg.print_debug = false;
@@ -855,9 +919,16 @@ int _main(int argc, char *argv[])
     std::uniform_real_distribution<float> up(0.0f, 1.0f);
     for (int i = 0; i < kPopulationSize; ++i) {
         Genome g = base;
-        g.p = g.p_min + (g.p_max - g.p_min) * up(rng);
-        g.i = g.i_min + (g.i_max - g.i_min) * up(rng);
-        g.d = g.d_min + (g.d_max - g.d_min) * up(rng);
+        if (i == 0) {
+            // 第一代第一个样本固定为 pipeline_uart 的基准 PID。
+            g.p = cfg.pid_kp;
+            g.i = cfg.pid_ki;
+            g.d = cfg.pid_kd;
+        } else {
+            g.p = g.p_min + (g.p_max - g.p_min) * up(rng);
+            g.i = g.i_min + (g.i_max - g.i_min) * up(rng);
+            g.d = g.d_min + (g.d_max - g.d_min) * up(rng);
+        }
         g.clamp();
         genomes.push_back(g);
     }
@@ -875,6 +946,7 @@ int _main(int argc, char *argv[])
     generation_evaluated.reserve(kPopulationSize);
 
     EpisodeMetrics active_metrics;
+    int lost_target_streak = 0;
     uint64_t phase_start_ms = time::ticks_ms();
 
     float startup_pitch_deg = cfg.pitch_home;
@@ -902,10 +974,11 @@ int _main(int argc, char *argv[])
         pipeline.reset();
         pipeline.set_current_angles(startup_pitch_deg, startup_yaw_deg);
         pipeline.set_control_enabled(true);
-        pipeline.handle_key(' ');
+        pipeline.start_tracking();
 
         active_metrics = EpisodeMetrics();
-        train_phase = TrainingPhase::WaitLock;
+        lost_target_streak = 0;
+        train_phase = TrainingPhase::TrackingSample;
         phase_start_ms = time::ticks_ms();
 
         log::info("[GA] generation=%d sample=%d/%d pid=(%.4f, %.4f, %.4f)",
@@ -974,7 +1047,14 @@ int _main(int argc, char *argv[])
                 return;
             }
 
-            genomes = evolve_population(generation_evaluated, rng, kPopulationSize, 2, 0.30f, 0.15f);
+            const float progress = clamp_value(
+                static_cast<float>(generation_idx) / std::max(1, kGenerationCount - 1),
+                0.0f,
+                1.0f);
+            const float mutation_rate = kMutationRateStart + (kMutationRateEnd - kMutationRateStart) * progress;
+            const float mutation_sigma = kMutationSigmaStart + (kMutationSigmaEnd - kMutationSigmaStart) * progress;
+            log::info("[GA] evolve with mutation_rate=%.4f sigma=%.4f", mutation_rate, mutation_sigma);
+            genomes = evolve_population(generation_evaluated, rng, kPopulationSize, 2, mutation_rate, mutation_sigma);
             generation_evaluated.clear();
             sample_idx = 0;
         }
@@ -1011,7 +1091,8 @@ int _main(int argc, char *argv[])
 
         if (control.recognition_start_requested && !recognition_active) {
             pipeline.reset();
-            pipeline.set_control_enabled(true);
+            // A键之前仅识别，不输出云台控制，让手柄链路保持主控。
+            pipeline.set_control_enabled(false);
             pipeline.handle_key(' ');
             recognition_active = true;
             app_state = VisionAppState::Running;
@@ -1020,6 +1101,16 @@ int _main(int argc, char *argv[])
         }
 
         if (control.tracking_start_requested && !training_active) {
+            if (!recognition_active) {
+                pipeline.reset();
+                pipeline.set_control_enabled(true);
+                pipeline.handle_key(' ');
+                recognition_active = true;
+                app_state = VisionAppState::Running;
+                last_state = TrackState::Waiting;
+                log::info("[GA] recognition auto-started by tracking request");
+            }
+
             if (control.tracking_init_pose_valid) {
                 startup_yaw_deg = pwm_to_angle_deg(control.init_yaw_pwm, cfg.yaw_pwm_zero_angle);
                 startup_pitch_deg = pwm_to_angle_deg(control.init_pitch_pwm, cfg.pitch_pwm_zero_angle);
@@ -1055,24 +1146,20 @@ int _main(int argc, char *argv[])
 
             cv::Mat frame;
             maix::image::image2cv(*img, frame, true, true);
-            pipeline.set_control_enabled(true);
+            pipeline.set_control_enabled(training_active);
             out = pipeline.process_frame(frame, dt);
 
-            if (training_active && train_phase == TrainingPhase::WaitLock) {
-                const float wait_sec = static_cast<float>(now_tick_ms - phase_start_ms) / 1000.0f;
-                if (out.state == TrackState::Locked) {
-                    pipeline.start_tracking();
-                    train_phase = TrainingPhase::TrackingSample;
-                    phase_start_ms = now_tick_ms;
-                    active_metrics = EpisodeMetrics();
-                    log::info("[GA] sample locked, tracking for %.1fs", kSampleDurationSec);
-                } else if (wait_sec >= kLockWaitTimeoutSec) {
-                    active_metrics.total_frames = 1;
-                    finish_current_sample();
-                }
-            } else if (training_active && train_phase == TrainingPhase::TrackingSample) {
+            // 与 mygo_pipeline_uart 对齐并增强：训练中一旦不在 Tracking，持续尝试拉回 Tracking。
+            if (training_active && out.state != TrackState::Tracking &&
+                (out.target_found || train_phase == TrainingPhase::TrackingSample)) {
+                pipeline.start_tracking();
+                log::info("[GA][AUTO] Re-enter Tracking from %s", state_to_text(out.state));
+            }
+
+            if (training_active && train_phase == TrainingPhase::TrackingSample) {
                 active_metrics.total_frames += 1;
                 if (out.target_found) {
+                    lost_target_streak = 0;
                     active_metrics.target_found_frames += 1;
                     const float dx = out.target_pos.x - out.aim_pos.x;
                     const float dy = out.target_pos.y - out.aim_pos.y;
@@ -1080,6 +1167,15 @@ int _main(int argc, char *argv[])
                     active_metrics.sum_center_dist_px += center_dist;
                     if (center_dist <= kCenterHitThresholdPx) {
                         active_metrics.center_hit_frames += 1;
+                    }
+                } else {
+                    lost_target_streak += 1;
+                    if (lost_target_streak >= kLostReturnToStartFrames) {
+                        // 丢失目标后不搜索，直接回起始位并继续追踪。
+                        pipeline.set_current_angles(startup_pitch_deg, startup_yaw_deg);
+                        pipeline.start_tracking();
+                        lost_target_streak = 0;
+                        log::info("[GA][RECOVER] target lost, return to startup pose and continue tracking");
                     }
                 }
 
