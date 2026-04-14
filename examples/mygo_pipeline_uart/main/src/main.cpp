@@ -845,8 +845,8 @@ private:
 
 int _main(int argc, char *argv[])
 {
-    int frame_width = 640;
-    int frame_height = 640;
+    int frame_width = 512;
+    int frame_height = 512;
     int tcp_port = 5555;
     std::string cmd_log_path = "servo_command_debug.csv";
     bool invert_pitch = false;
@@ -869,9 +869,14 @@ int _main(int argc, char *argv[])
         }
     }
 
+    // Keep enough pixels for robust target detection while reducing processing load.
+    frame_width = std::max(frame_width, 320);
+    frame_height = std::max(frame_height, 320);
+
     std::string device_name = sys::device_name();
     std::transform(device_name.begin(), device_name.end(), device_name.begin(), ::tolower);
     log::info("device: %s", device_name.c_str());
+    log::info("camera resolution: %dx%d", frame_width, frame_height);
     log::info("local uart forwarding disabled, use tcp->ros control path");
 
     const bool auto_start_tracking = true;
@@ -887,9 +892,9 @@ int _main(int argc, char *argv[])
     cfg.yaw_home = 135.0f;
     cfg.pitch_pwm_zero_angle = 135.0f;
     cfg.yaw_pwm_zero_angle = 135.0f;
-    cfg.pid_kp = 2.0f;
+    cfg.pid_kp = 3.2f;
     cfg.pid_ki = 0.0f;
-    cfg.pid_kd = 0.0f;
+    cfg.pid_kd = 0.2f;
     cfg.scan_yaw_freq = 0.08f;
     cfg.scan_pitch_freq = 0.10f;
     // Real device observation: larger yaw PWM turns camera left, larger pitch PWM turns camera up.
@@ -942,12 +947,14 @@ int _main(int argc, char *argv[])
     last_output.command.clear();
 
     constexpr int kStreamPort = 8000;
-    constexpr uint64_t kStreamIntervalMs = 200;
+    constexpr uint64_t kStreamIntervalMs = 300;
+    constexpr uint64_t kCmdLogFlushIntervalMs = 500;
     http::JpegStreamer stream("", kStreamPort);
     stream.set_html(kStreamHtml);
-    stream.start();
-    log::info("background stream ready: http://%s:%d/stream", stream.host().c_str(), stream.port());
+    bool stream_active = false;
+    log::info("background stream standby: http://%s:%d/stream", stream.host().c_str(), stream.port());
     uint64_t last_stream_ms = time::ticks_ms();
+    uint64_t last_cmd_log_flush_ms = last_stream_ms;
 
     while (!app::need_exit()) {
         PendingControl control;
@@ -978,6 +985,11 @@ int _main(int argc, char *argv[])
             last_output.state = TrackState::Waiting;
             last_output.command.clear();
             last_state = TrackState::Waiting;
+            if (stream_active) {
+                stream.stop();
+                stream_active = false;
+                log::info("background stream stopped (vision stop)");
+            }
             log::info("vision task stopped by tcp command");
         }
 
@@ -1003,6 +1015,11 @@ int _main(int argc, char *argv[])
             }
             pipeline.start_tracking();
             app_state = VisionAppState::Running;
+            if (stream_active) {
+                stream.stop();
+                stream_active = false;
+                log::info("background stream stopped (tracking start)");
+            }
             log::info("vision tracking enabled by tcp command");
         } else if (control.recognition_start_requested) {
             pipeline.reset();
@@ -1012,6 +1029,11 @@ int _main(int argc, char *argv[])
             tracking_enabled = false;
             app_state = VisionAppState::Running;
             last_state = TrackState::Waiting;
+            if (!stream_active) {
+                stream.start();
+                stream_active = true;
+                log::info("background stream started (recognition mode)");
+            }
             log::info("vision task started by tcp command");
         }
 
@@ -1070,7 +1092,10 @@ int _main(int argc, char *argv[])
                     << (out.target_found ? 1 : 0) << ","
                     << (out.laser_found ? 1 : 0) << ",\""
                     << command_clean << "\"\n";
-            cmd_log.flush();
+            if ((now_tick_ms - last_cmd_log_flush_ms) >= kCmdLogFlushIntervalMs) {
+                cmd_log.flush();
+                last_cmd_log_flush_ms = now_tick_ms;
+            }
         }
 
         draw_pipeline_overlay(*img,
@@ -1081,7 +1106,8 @@ int _main(int argc, char *argv[])
                               tcp_server.is_client_connected(),
                               tcp_port);
 
-        if (recognition_active && (now_tick_ms - last_stream_ms) >= kStreamIntervalMs) {
+        if (stream_active && recognition_active && tcp_server.is_client_connected() &&
+            (now_tick_ms - last_stream_ms) >= kStreamIntervalMs) {
             image::Image *jpg = img->to_jpeg();
             if (jpg) {
                 stream.write(jpg);
@@ -1094,7 +1120,9 @@ int _main(int argc, char *argv[])
         delete img;
     }
 
-    stream.stop();
+    if (stream_active) {
+        stream.stop();
+    }
 
     return 0;
 }

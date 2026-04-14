@@ -157,7 +157,9 @@ public:
             << "T" << std::setw(4) << std::setfill('0') << pitch_t << "!"
             << "}";
         _command_buffer = oss.str();
-        std::cout << "Generated command: " << _command_buffer << std::endl;
+        if (_debug_output) {
+            std::cout << "Generated command: " << _command_buffer << std::endl;
+        }
     }
     /// 获取当前完整命令字符串。
     const std::string& get_command_buffer() const{
@@ -191,12 +193,17 @@ public:
         }
         return _serial.write_string(command);
     }
+    /// 控制命令调试输出开关。
+    void set_debug_output(bool enabled){
+        _debug_output = enabled;
+    }
 
 private:
     ServoMotor _pitch_motor{3};
     ServoMotor _yaw_motor{0};
     float _pitch_zero_angle_deg{135.0f};
     float _yaw_zero_angle_deg{135.0f};
+    bool _debug_output{false};
     std::string _command_buffer;
     SerialPort _serial;
 };
