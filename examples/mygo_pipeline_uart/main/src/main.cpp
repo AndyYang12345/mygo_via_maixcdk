@@ -892,9 +892,9 @@ int _main(int argc, char *argv[])
     cfg.yaw_home = 135.0f;
     cfg.pitch_pwm_zero_angle = 135.0f;
     cfg.yaw_pwm_zero_angle = 135.0f;
-    cfg.pid_kp = 3.2f;
+    cfg.pid_kp = 3.6f;
     cfg.pid_ki = 0.0f;
-    cfg.pid_kd = 0.2f;
+    cfg.pid_kd = 0.18f;
     cfg.scan_yaw_freq = 0.08f;
     cfg.scan_pitch_freq = 0.10f;
     // Real device observation: larger yaw PWM turns camera left, larger pitch PWM turns camera up.
