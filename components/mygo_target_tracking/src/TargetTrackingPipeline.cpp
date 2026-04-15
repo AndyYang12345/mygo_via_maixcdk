@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <random>
 #include <sstream>
 
 TargetTrackingPipeline::TargetTrackingPipeline() {
@@ -13,6 +14,7 @@ TargetTrackingPipeline::TargetTrackingPipeline() {
     apply_pid_gains_from_config();
     pitch_angle_ = config_.pitch_home;
     yaw_angle_ = config_.yaw_home;
+    reset_micro_sim_state();
 }
 
 void TargetTrackingPipeline::set_config(const PipelineConfig& config) {
@@ -23,6 +25,7 @@ void TargetTrackingPipeline::set_config(const PipelineConfig& config) {
     apply_pid_gains_from_config();
     pitch_angle_ = config_.pitch_home;
     yaw_angle_ = config_.yaw_home;
+    reset_micro_sim_state();
 }
 
 PipelineConfig TargetTrackingPipeline::get_config() const {
@@ -52,6 +55,7 @@ void TargetTrackingPipeline::start_tracking() {
     state_ = TrackState::Tracking;
     lock_count_ = 0;
     lost_count_ = 0;
+    sim_no_measure_time_ = 0.0f;
     reset_pid(pid_pitch_);
     reset_pid(pid_yaw_);
 }
@@ -75,6 +79,7 @@ void TargetTrackingPipeline::reset() {
     reset_pid(pid_pitch_);
     reset_pid(pid_yaw_);
     tracker_.reset_roi_tracking();
+    reset_micro_sim_state();
 }
 
 void TargetTrackingPipeline::handle_key(int key) {
@@ -114,6 +119,12 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     const bool has_target = info.found;
     const bool has_laser = info.laser_found;
 
+    if (has_target) {
+        sync_micro_sim_orbit_from_measurement(info);
+        sim_no_measure_time_ = 0.0f;
+    }
+    update_micro_sim_dynamics(dt);
+
     cv::Point2f target_pos(-1.0f, -1.0f);
     if (has_target) {
         target_pos = info.target_center;
@@ -126,6 +137,11 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     }
     output.aim_pos = cv::Point2f(cx, cy);
     output.aim_from_laser = false;
+    output.sim_active = config_.enable_micro_sim && config_.micro_sim_mode != MicroSimMode::Disabled;
+    output.sim_ready = output.sim_active && sim_initialized_ && sim_orbit_valid_;
+    output.sim_angle_rad = sim_angle_rad_;
+    output.sim_speed_rad_s = sim_speed_rad_s_;
+    output.sim_target_speed_rad_s = sim_target_speed_rad_s_;
 
     if (state_ == TrackState::Waiting) {
         pitch_angle_ = config_.pitch_home;
@@ -201,14 +217,24 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             }
         }
     } else if (state_ == TrackState::Tracking) {
+        bool sim_predicted = false;
+        cv::Point2f tracking_pos = target_pos;
+        if (!has_target) {
+            sim_predicted = get_micro_sim_prediction(dt, tracking_pos);
+            if (sim_predicted) {
+                output.sim_target_pos = tracking_pos;
+                output.sim_predicted = true;
+            }
+        }
+
         if (!control_enabled_) {
             pitch_speed_ = 0.0f;
             yaw_speed_ = 0.0f;
-        } else if (has_target) {
+        } else if (has_target || sim_predicted) {
             float dx = 0.0f;
             float dy = 0.0f;
-            dx = target_pos.x - cx;
-            dy = target_pos.y - cy;
+            dx = tracking_pos.x - cx;
+            dy = tracking_pos.y - cy;
             output.aim_pos = cv::Point2f(cx, cy);
             output.aim_from_laser = false;
             // 使用角度误差驱动PID，避免归一化误差量级过小导致控制输出不足。
@@ -220,18 +246,25 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
 
             if (config_.print_debug) {
                 std::cout << std::fixed << std::setprecision(2)
-                          << "Target(px):(" << target_pos.x << "," << target_pos.y << ")"
+                          << "Target(px):(" << tracking_pos.x << "," << tracking_pos.y << ")"
                           << " Laser(px):(" << laser_pos.x << "," << laser_pos.y << ")"
                           << " dx,dy:(" << dx << "," << dy << ")"
                           << " pitch_err:" << pitch_error
                           << " yaw_err:" << yaw_error
+                          << " sim_pred:" << (sim_predicted ? 1 : 0)
                           << " cur_pitch:" << pitch_angle_
                           << " cur_yaw:" << yaw_angle_
                           << std::endl;
             }
 
-            float pitch_speed_cmd = pid_step(pitch_error, dt, pid_pitch_, config_.integral_limit);
-            float yaw_speed_cmd = pid_step(yaw_error, dt, pid_yaw_, config_.integral_limit);
+            const bool allow_integral = !sim_predicted;
+            const float gain_scale = sim_predicted
+                                        ? clamp_value(config_.micro_sim_pd_gain_scale, 0.0f, 1.0f)
+                                        : 1.0f;
+            float pitch_speed_cmd = pid_step(pitch_error, dt, pid_pitch_, config_.integral_limit, allow_integral);
+            float yaw_speed_cmd = pid_step(yaw_error, dt, pid_yaw_, config_.integral_limit, allow_integral);
+            pitch_speed_cmd *= gain_scale;
+            yaw_speed_cmd *= gain_scale;
 
             pitch_speed_ = clamp_value(pitch_speed_cmd, -config_.max_speed, config_.max_speed);
             yaw_speed_ = clamp_value(yaw_speed_cmd, -config_.max_speed, config_.max_speed);
@@ -241,7 +274,11 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             pitch_angle_ = clamp_value(pitch_angle_, 0.0f, 270.0f);
             yaw_angle_ = clamp_value(yaw_angle_, 0.0f, 270.0f);
 
-            lost_count_ = 0;
+            if (has_target) {
+                lost_count_ = 0;
+            } else {
+                lost_count_ = std::min(lost_count_ + 1, config_.lost_required);
+            }
         } else {
             pitch_speed_ = 0.0f;
             yaw_speed_ = 0.0f;
@@ -288,6 +325,9 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.laser_found = has_laser;
     output.laser_pos = laser_pos;
     output.laser_target_error_px = (has_target && has_laser) ? cv::norm(target_pos - laser_pos) : 0.0f;
+    if (has_target) {
+        output.sim_target_pos = target_pos;
+    }
 
     if (config_.draw_overlay) {
         output.canvas = frame.clone();
@@ -332,6 +372,21 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         if (has_target && target_pos.x >= 0.0f) {
             cv::circle(output.canvas, cv::Point(static_cast<int>(target_pos.x), static_cast<int>(target_pos.y)),
                        6, cv::Scalar(0, 0, 255), -1);
+        }
+        if (output.sim_predicted && output.sim_target_pos.x >= 0.0f) {
+            cv::circle(output.canvas,
+                       cv::Point(static_cast<int>(output.sim_target_pos.x), static_cast<int>(output.sim_target_pos.y)),
+                       5,
+                       cv::Scalar(255, 0, 255),
+                       2);
+            cv::putText(output.canvas,
+                        "SIM",
+                        cv::Point(static_cast<int>(output.sim_target_pos.x) + 6,
+                                  static_cast<int>(output.sim_target_pos.y) - 6),
+                        cv::FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        cv::Scalar(255, 0, 255),
+                        1);
         }
         if (has_laser && laser_pos.x >= 0.0f) {
             cv::circle(output.canvas, cv::Point(static_cast<int>(laser_pos.x), static_cast<int>(laser_pos.y)),
@@ -388,9 +443,11 @@ float TargetTrackingPipeline::clamp_value(float v, float lo, float hi) const {
     return std::max(lo, std::min(v, hi));
 }
 
-float TargetTrackingPipeline::pid_step(float error, float dt, PID& pid, float integral_limit) {
-    pid.integral += error * dt;
-    pid.integral = clamp_value(pid.integral, -integral_limit, integral_limit);
+float TargetTrackingPipeline::pid_step(float error, float dt, PID& pid, float integral_limit, bool allow_integral) {
+    if (allow_integral) {
+        pid.integral += error * dt;
+        pid.integral = clamp_value(pid.integral, -integral_limit, integral_limit);
+    }
 
     float derivative = 0.0f;
     if (pid.has_prev && dt > 1e-6f) {
@@ -417,4 +474,106 @@ void TargetTrackingPipeline::apply_pid_gains_from_config() {
     pid_yaw_.kd = config_.pid_kd;
     reset_pid(pid_pitch_);
     reset_pid(pid_yaw_);
+}
+
+void TargetTrackingPipeline::reset_micro_sim_state() {
+    sim_initialized_ = false;
+    sim_time_ = 0.0f;
+    sim_angle_rad_ = 0.0f;
+    sim_speed_rad_s_ = 0.0f;
+    sim_target_speed_rad_s_ = 0.0f;
+    sim_no_measure_time_ = 0.0f;
+    sim_orbit_center_px_ = cv::Point2f(-1.0f, -1.0f);
+    sim_orbit_radius_px_ = 0.0f;
+    sim_orbit_valid_ = false;
+
+    std::mt19937 rng(std::random_device{}());
+    std::uniform_real_distribution<float> a_dist(config_.micro_sim_big_a_min, config_.micro_sim_big_a_max);
+    std::uniform_real_distribution<float> w_dist(config_.micro_sim_big_omega_min, config_.micro_sim_big_omega_max);
+    std::uniform_int_distribution<int> dir_dist(0, 1);
+
+    sim_big_a_ = a_dist(rng);
+    sim_big_omega_ = w_dist(rng);
+    sim_big_b_ = 2.090f - sim_big_a_;
+    sim_direction_sign_ = (config_.micro_sim_random_direction && dir_dist(rng) == 0) ? -1 : 1;
+}
+
+void TargetTrackingPipeline::update_micro_sim_dynamics(float dt) {
+    if (!config_.enable_micro_sim || config_.micro_sim_mode == MicroSimMode::Disabled) {
+        return;
+    }
+
+    sim_time_ += dt;
+    float target_speed = 0.0f;
+    if (config_.micro_sim_mode == MicroSimMode::SmallFixed) {
+        target_speed = config_.micro_sim_small_speed_rad_s;
+    } else {
+        target_speed = sim_big_a_ * std::sin(sim_big_omega_ * sim_time_) + sim_big_b_;
+    }
+    target_speed *= static_cast<float>(sim_direction_sign_);
+    sim_target_speed_rad_s_ = target_speed;
+
+    const float tau = std::max(1e-3f, config_.micro_sim_speed_lag_sec);
+    const float alpha = clamp_value(dt / tau, 0.0f, 1.0f);
+    sim_speed_rad_s_ += (target_speed - sim_speed_rad_s_) * alpha;
+    sim_angle_rad_ += sim_speed_rad_s_ * dt;
+    if (sim_angle_rad_ > static_cast<float>(CV_PI)) {
+        sim_angle_rad_ -= 2.0f * static_cast<float>(CV_PI);
+    } else if (sim_angle_rad_ < -static_cast<float>(CV_PI)) {
+        sim_angle_rad_ += 2.0f * static_cast<float>(CV_PI);
+    }
+}
+
+void TargetTrackingPipeline::sync_micro_sim_orbit_from_measurement(const TargetInfo& info) {
+    if (!info.found || info.board_center.x < 0.0f || info.target_center.x < 0.0f) {
+        return;
+    }
+
+    const cv::Point2f center = info.board_center;
+    const cv::Point2f target = info.target_center;
+    const float radius = cv::norm(target - center);
+    if (radius < 3.0f) {
+        return;
+    }
+
+    const float measured_angle = std::atan2(target.y - center.y, target.x - center.x);
+    if (!sim_orbit_valid_) {
+        sim_orbit_center_px_ = center;
+        sim_orbit_radius_px_ = radius;
+        sim_angle_rad_ = measured_angle;
+        sim_orbit_valid_ = true;
+        sim_initialized_ = true;
+        return;
+    }
+
+    const float kCenterBlend = 0.25f;
+    const float kRadiusBlend = 0.20f;
+    const float kAngleBlend = 0.25f;
+    sim_orbit_center_px_ = sim_orbit_center_px_ * (1.0f - kCenterBlend) + center * kCenterBlend;
+    sim_orbit_radius_px_ = sim_orbit_radius_px_ * (1.0f - kRadiusBlend) + radius * kRadiusBlend;
+
+    float angle_diff = measured_angle - sim_angle_rad_;
+    while (angle_diff > static_cast<float>(CV_PI)) angle_diff -= 2.0f * static_cast<float>(CV_PI);
+    while (angle_diff < -static_cast<float>(CV_PI)) angle_diff += 2.0f * static_cast<float>(CV_PI);
+    sim_angle_rad_ += kAngleBlend * angle_diff;
+}
+
+bool TargetTrackingPipeline::get_micro_sim_prediction(float dt, cv::Point2f& out_pos) {
+    (void)dt;
+    if (!config_.enable_micro_sim || config_.micro_sim_mode == MicroSimMode::Disabled) {
+        return false;
+    }
+    if (!sim_orbit_valid_ || !sim_initialized_) {
+        return false;
+    }
+
+    sim_no_measure_time_ += dt;
+    if (sim_no_measure_time_ > std::max(0.05f, config_.micro_sim_prediction_hold_sec)) {
+        return false;
+    }
+
+    out_pos = cv::Point2f(
+        sim_orbit_center_px_.x + sim_orbit_radius_px_ * std::cos(sim_angle_rad_),
+        sim_orbit_center_px_.y + sim_orbit_radius_px_ * std::sin(sim_angle_rad_));
+    return true;
 }

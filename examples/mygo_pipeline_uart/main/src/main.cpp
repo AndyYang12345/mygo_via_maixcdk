@@ -82,6 +82,8 @@ struct PendingControl {
     bool recognition_start_requested{false};
     bool tracking_start_requested{false};
     bool stop_requested{false};
+    bool sim_mode_update_valid{false};
+    uint8_t sim_mode{0xFF};
     bool tracking_init_pose_valid{false};
     int init_yaw_pwm{1500};
     int init_pitch_pwm{1500};
@@ -230,6 +232,7 @@ void draw_pipeline_overlay(
     const PipelineOutput &out,
     VisionAppState app_state,
     bool task_active,
+    bool tracking_enabled,
     bool tcp_listening,
     bool tcp_client_connected,
     int tcp_port)
@@ -321,6 +324,11 @@ void draw_pipeline_overlay(
         banner_sub = "Recognition is closed. Waiting host start command.";
         banner_color = warn_color;
         banner_bg = dark_warn_bg;
+    } else if (task_active && !tracking_enabled && out.sim_ready) {
+        banner_text = "WaitingToStart";
+        banner_sub = "Simulation ready. Press A to start tracking.";
+        banner_color = ok_color;
+        banner_bg = dark_good_bg;
     } else if (task_active && out.state == TrackState::Tracking) {
         banner_text = "TRACKING TARGET";
         banner_sub = out.target_found ? "Servo command is being generated." : "Tracking active.";
@@ -781,6 +789,16 @@ private:
                     control.init_pitch_pwm = std::clamp(pitch_pwm, 500, 2500);
                     control.tracking_init_pose_valid = true;
                 }
+                if (frame.body.size() >= 6 && frame.body[0] == 0xFE) {
+                    control.tracking_start_requested = (frame.body[5] != 0U);
+                }
+                if (frame.body.size() >= 7 && frame.body[0] == 0xFE) {
+                    const uint8_t sim_mode = frame.body[6];
+                    if (sim_mode <= 2U) {
+                        control.sim_mode_update_valid = true;
+                        control.sim_mode = sim_mode;
+                    }
+                }
                 return encode_resp_ok(frame.cmd, {});
             case CMD_EXIT_APP:
             case APP_CMD_VISION_STOP:
@@ -944,6 +962,7 @@ int _main(int argc, char *argv[])
     VisionAppState app_state = VisionAppState::Idle;
     bool recognition_active = false;
     bool tracking_enabled = false;
+    bool waiting_to_start = false;
     uint64_t run_start_ms = time::ticks_ms();
     uint64_t frame_index = 0;
     uint64_t last_tick_ms = time::ticks_ms();
@@ -966,6 +985,7 @@ int _main(int argc, char *argv[])
 
     while (!app::need_exit()) {
         PendingControl control;
+        const uint64_t now_tick_ms_snapshot = time::ticks_ms();
         VisionStatusSnapshot snapshot;
         snapshot.app_state = app_state;
         snapshot.tracking_state = recognition_active ? state_to_text(last_output.state) : "Stopped";
@@ -983,12 +1003,38 @@ int _main(int argc, char *argv[])
                     : -1;
         snapshot.command = tracking_enabled ? last_output.command : "";
         snapshot.frame_index = frame_index;
-        snapshot.run_ms = now_tick_ms - run_start_ms;
+        snapshot.run_ms = now_tick_ms_snapshot - run_start_ms;
         tcp_server.poll(snapshot, control);
+
+        if (control.sim_mode_update_valid) {
+            PipelineConfig updated_cfg = pipeline.get_config();
+            switch (control.sim_mode) {
+                case 0:
+                    updated_cfg.enable_micro_sim = false;
+                    updated_cfg.micro_sim_mode = MicroSimMode::Disabled;
+                    log::info("sim mode update: OFF");
+                    break;
+                case 1:
+                    updated_cfg.enable_micro_sim = true;
+                    updated_cfg.micro_sim_mode = MicroSimMode::SmallFixed;
+                    log::info("sim mode update: SMALL");
+                    break;
+                case 2:
+                    updated_cfg.enable_micro_sim = true;
+                    updated_cfg.micro_sim_mode = MicroSimMode::BigVariable;
+                    log::info("sim mode update: BIG");
+                    break;
+                default:
+                    break;
+            }
+            pipeline.set_config(updated_cfg);
+            waiting_to_start = false;
+        }
 
         if (control.stop_requested) {
             recognition_active = false;
             tracking_enabled = false;
+            waiting_to_start = false;
             app_state = VisionAppState::Stopped;
             pipeline.reset();
             pipeline.set_control_enabled(false);
@@ -1013,6 +1059,7 @@ int _main(int argc, char *argv[])
                 last_state = TrackState::Waiting;
             }
             tracking_enabled = true;
+            waiting_to_start = false;
             pipeline.set_control_enabled(true);
             if (control.tracking_init_pose_valid) {
                 const float yaw_deg = pwm_to_angle_deg(control.init_yaw_pwm, cfg.yaw_pwm_zero_angle);
@@ -1038,6 +1085,7 @@ int _main(int argc, char *argv[])
             pipeline.handle_key(' ');
             recognition_active = true;
             tracking_enabled = false;
+            waiting_to_start = false;
             app_state = VisionAppState::Running;
             last_state = TrackState::Waiting;
             if (!stream_active) {
@@ -1079,6 +1127,10 @@ int _main(int argc, char *argv[])
             if (auto_start_tracking && tracking_enabled && out.state == TrackState::Locked) {
                 pipeline.start_tracking();
                 log::info("[AUTO] Locked -> Tracking");
+            }
+
+            if (!tracking_enabled && out.sim_ready) {
+                waiting_to_start = true;
             }
             last_state = out.state;
         } else {
@@ -1128,9 +1180,14 @@ int _main(int argc, char *argv[])
                               out,
                               app_state,
                               recognition_active,
+                              tracking_enabled,
                               tcp_server.is_listening(),
                               tcp_server.is_client_connected(),
                               tcp_port);
+
+        if (waiting_to_start && recognition_active && !tracking_enabled) {
+            img->draw_string(24, 24, "WaitingToStart", image::Color::from_rgb(0, 255, 120), 1.3f, 2);
+        }
 
         if (stream_active && recognition_active && tcp_server.is_client_connected() &&
             (now_tick_ms - last_stream_ms) >= kStreamIntervalMs) {
