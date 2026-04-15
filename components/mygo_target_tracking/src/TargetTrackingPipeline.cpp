@@ -144,6 +144,15 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.sim_target_speed_rad_s = sim_target_speed_rad_s_;
     output.sim_equation = sim_equation_text_;
 
+    if (output.sim_ready) {
+        cv::Point2f sim_preview_pos(-1.0f, -1.0f);
+        const float preview_lead_sec = std::max(0.0f, config_.micro_sim_phase_lead_sec);
+        if (get_micro_sim_prediction(preview_lead_sec, sim_preview_pos, false)) {
+            output.sim_target_pos = sim_preview_pos;
+            output.sim_predicted = true;
+        }
+    }
+
     if (state_ == TrackState::Waiting) {
         pitch_angle_ = config_.pitch_home;
         yaw_angle_ = config_.yaw_home;
@@ -337,6 +346,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.pitch_speed = pitch_speed_;
     output.yaw_speed = yaw_speed_;
     output.target_found = has_target;
+    output.target_from_roi = has_target && info.target_from_roi;
     output.target_pos = target_pos;
     output.roi_active = info.roi_active;
     output.roi_rect = info.roi_rect;

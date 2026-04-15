@@ -94,6 +94,7 @@ struct TargetInfo {
     float angle = 0.0f;               // 角度（度）
     bool roi_active = false;          // 当前是否在使用ROI跟踪
     cv::Rect roi_rect{-1, -1, 0, 0};  // 当前ROI窗口
+    bool target_from_roi = false;     // 目标点是否来自ROI分支
     bool laser_found = false;         // 是否找到激光红点
     cv::Point2f laser_center{-1.0f, -1.0f}; // 激光红点中心
     float laser_to_target_distance = 0.0f;  // 激光到目标的像素距离

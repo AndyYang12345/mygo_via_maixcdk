@@ -90,6 +90,7 @@ struct PipelineOutput {
     int lock_count = 0;
     int lost_count = 0;
     bool target_found = false;
+    bool target_from_roi = false;
     cv::Point2f target_pos{-1.0f, -1.0f};
     bool roi_active = false;
     cv::Rect roi_rect{-1, -1, 0, 0};

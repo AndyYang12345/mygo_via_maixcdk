@@ -352,6 +352,7 @@ void draw_pipeline_overlay(
     }
 
     if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
+        const std::string target_label = out.target_from_roi ? "target(roi)" : "target(full)";
         img.draw_rect(static_cast<int>(out.target_pos.x) - 3,
                       static_cast<int>(out.target_pos.y) - 3,
                       7,
@@ -360,9 +361,33 @@ void draw_pipeline_overlay(
                       2);
         img.draw_string(static_cast<int>(out.target_pos.x) + 6,
                         static_cast<int>(out.target_pos.y) - 10,
-                        "target",
+                        target_label,
                         target_color,
                         1.2f);
+    }
+
+    if (out.sim_target_pos.x >= 0.0f && out.sim_target_pos.y >= 0.0f) {
+        const image::Color sim_color = image::Color::from_rgb(255, 0, 255);
+        img.draw_rect(static_cast<int>(out.sim_target_pos.x) - 3,
+                      static_cast<int>(out.sim_target_pos.y) - 3,
+                      7,
+                      7,
+                      sim_color,
+                      2);
+        img.draw_string(static_cast<int>(out.sim_target_pos.x) + 6,
+                        static_cast<int>(out.sim_target_pos.y) + 10,
+                        "sim_pred",
+                        sim_color,
+                        1.0f);
+
+        if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
+            img.draw_line(static_cast<int>(out.target_pos.x),
+                          static_cast<int>(out.target_pos.y),
+                          static_cast<int>(out.sim_target_pos.x),
+                          static_cast<int>(out.sim_target_pos.y),
+                          image::Color::from_rgb(255, 170, 0),
+                          1);
+        }
     }
 
     if (out.roi_active && out.roi_rect.width > 0 && out.roi_rect.height > 0) {

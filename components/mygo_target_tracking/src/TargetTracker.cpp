@@ -36,6 +36,7 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     result.laser_found = false;
     result.roi_active = false;
     result.roi_rect = cv::Rect(-1, -1, 0, 0);
+    result.target_from_roi = false;
     frames_processed_++;
     
     // 更新帧大小
@@ -57,6 +58,7 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     if (roi_tracking_active_) {
         if (update_roi_tracking(frame, result)) {
             target_ready = result.found;
+            result.target_from_roi = result.found;
         } else {
             // ROI tracking失败则回退到完整靶面识别
             roi_tracking_active_ = false;
@@ -112,6 +114,7 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     
         // Step 4: 计算结果
         result.found = true;
+        result.target_from_roi = false;
         result.board_center = center_blob->center;
         result.target_center = target_blob->center;
         last_board_position_ = result.board_center;
