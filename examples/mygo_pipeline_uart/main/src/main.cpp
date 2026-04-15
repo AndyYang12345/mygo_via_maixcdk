@@ -70,8 +70,11 @@ struct VisionStatusSnapshot {
     bool can_scan{false};
     bool target_found{false};
     bool laser_found{false};
+    int lost_count{0};
     int target_x{-1};
     int target_y{-1};
+    uint64_t frame_index{0};
+    uint64_t run_ms{0};
     std::string command;
 };
 
@@ -707,6 +710,9 @@ private:
         append_cstr(body, snapshot.can_scan ? "1" : "0");
         append_cstr(body, std::to_string(snapshot.target_x));
         append_cstr(body, std::to_string(snapshot.target_y));
+        append_cstr(body, std::to_string(snapshot.lost_count));
+        append_cstr(body, std::to_string(snapshot.frame_index));
+        append_cstr(body, std::to_string(snapshot.run_ms));
         return body;
     }
 
@@ -948,12 +954,14 @@ int _main(int argc, char *argv[])
 
     constexpr int kStreamPort = 8000;
     constexpr uint64_t kStreamIntervalMs = 300;
+    constexpr uint64_t kHeartbeatLogIntervalMs = 100;
     constexpr uint64_t kCmdLogFlushIntervalMs = 500;
     http::JpegStreamer stream("", kStreamPort);
     stream.set_html(kStreamHtml);
     bool stream_active = false;
     log::info("background stream standby: http://%s:%d/stream", stream.host().c_str(), stream.port());
     uint64_t last_stream_ms = time::ticks_ms();
+    uint64_t last_heartbeat_log_ms = last_stream_ms;
     uint64_t last_cmd_log_flush_ms = last_stream_ms;
 
     while (!app::need_exit()) {
@@ -966,6 +974,7 @@ int _main(int argc, char *argv[])
         snapshot.can_scan = recognition_active && !tracking_enabled;
         snapshot.target_found = recognition_active ? last_output.target_found : false;
         snapshot.laser_found = recognition_active ? last_output.laser_found : false;
+        snapshot.lost_count = recognition_active ? last_output.lost_count : 0;
         snapshot.target_x = (recognition_active && last_output.target_found)
                     ? static_cast<int>(std::lround(last_output.target_pos.x))
                     : -1;
@@ -973,6 +982,8 @@ int _main(int argc, char *argv[])
                     ? static_cast<int>(std::lround(last_output.target_pos.y))
                     : -1;
         snapshot.command = tracking_enabled ? last_output.command : "";
+        snapshot.frame_index = frame_index;
+        snapshot.run_ms = now_tick_ms - run_start_ms;
         tcp_server.poll(snapshot, control);
 
         if (control.stop_requested) {
@@ -1076,6 +1087,21 @@ int _main(int argc, char *argv[])
         }
 
         last_output = out;
+
+        if ((now_tick_ms - last_heartbeat_log_ms) >= kHeartbeatLogIntervalMs) {
+            log::info(
+                "[HB] frame=%llu run_ms=%llu app=%s track=%s active=%d found=%d laser=%d lost=%d cmd=%s",
+                static_cast<unsigned long long>(frame_index),
+                static_cast<unsigned long long>(now_tick_ms - run_start_ms),
+                vision_app_state_to_text(app_state),
+                state_to_text(out.state),
+                recognition_active ? 1 : 0,
+                out.target_found ? 1 : 0,
+                out.laser_found ? 1 : 0,
+                out.lost_count,
+                preview_text(out.command, 40).c_str());
+            last_heartbeat_log_ms = now_tick_ms;
+        }
 
         if (cmd_log.is_open()) {
             std::string command_clean = out.command;
