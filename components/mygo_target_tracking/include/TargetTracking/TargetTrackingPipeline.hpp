@@ -57,10 +57,19 @@ struct PipelineConfig {
     float micro_sim_prediction_hold_sec = 0.45f;
     // Use softer control when only prediction is available
     float micro_sim_pd_gain_scale = 0.65f;
-    // 预测相位提前时间（秒），用于有测量时的前馈融合。
-    float micro_sim_phase_lead_sec = 0.08f;
+    // 兼容保留：固定相位提前时间（秒），角速度过小时兜底使用。
+    float micro_sim_phase_lead_sec = 0.18f;
+    // 目标固定相位提前角（度），默认约10度。
+    float micro_sim_phase_lead_deg = 10.0f;
+    // 相位提前时间上限，防止低速时外推过远。
+    float micro_sim_phase_lead_max_sec = 0.30f;
     // 有测量时，融合比例：tracking = (1-r)*meas + r*pred_lead
     float micro_sim_blend_ratio = 0.30f;
+
+    // 预测点融合卡尔曼（用于最终舵机驱动目标）
+    bool enable_target_fusion_kalman = true;
+    // 仅预测点可用时，校正权重（越小越保守）
+    float target_fusion_sim_only_weight = 0.35f;
 
     // Search scan parameters
     float scan_yaw_amp = 30.0f;
@@ -182,9 +191,19 @@ private:
     /// 按配置更新微仿真角速度和角度状态。
     void update_micro_sim_dynamics(float dt);
     /// 用测量到的靶心与目标位置同步仿真轨道参数。
-    void sync_micro_sim_orbit_from_measurement(const TargetInfo& info);
+    void sync_micro_sim_orbit_from_measurement(const TargetInfo& info, float dt);
     /// 在无测量时给出短时预测目标像素坐标。
     bool get_micro_sim_prediction(float dt, cv::Point2f& out_pos, bool account_missing = true);
+    /// 由“提前角度”换算当前帧的提前时间。
+    float get_micro_sim_phase_lead_time_sec() const;
+    /// 重置用于舵机目标融合的卡尔曼滤波器。
+    void reset_target_fusion_kalman();
+    /// 确保卡尔曼已初始化（必要时用给定点初始化）。
+    void ensure_target_fusion_kalman_initialized(const cv::Point2f& init_pos);
+    /// 预测融合卡尔曼状态并返回预测位置。
+    cv::Point2f predict_target_fusion_kalman(float dt);
+    /// 使用加权观测校正融合卡尔曼并返回校正位置。
+    cv::Point2f correct_target_fusion_kalman(const cv::Point2f& measurement, float measurement_weight);
 
     PipelineConfig config_;
     bool control_enabled_ = true;
@@ -211,10 +230,17 @@ private:
     float sim_big_a_ = 0.900f;
     float sim_big_omega_ = 1.950f;
     float sim_big_b_ = 1.190f;
+    float sim_measured_omega_rad_s_ = 0.0f;
+    float sim_last_measured_angle_rad_ = 0.0f;
+    bool sim_has_last_measured_angle_ = false;
     cv::Point2f sim_orbit_center_px_{-1.0f, -1.0f};
     float sim_orbit_radius_px_ = 0.0f;
     bool sim_orbit_valid_ = false;
     std::string sim_equation_text_;
+
+    cv::KalmanFilter target_fusion_kf_;
+    bool target_fusion_kf_initialized_ = false;
+    cv::Point2f target_fusion_last_pos_{-1.0f, -1.0f};
 
     GimbalControl gimbal_;
     TargetTracker tracker_;

@@ -273,6 +273,12 @@ void draw_pipeline_overlay(
     const int info_first_y = info_y + 46;
     const int info_preview_y = info_y + info_h - 24;
     const int info_step = std::max(18, (info_preview_y - info_first_y - 4) / 6);
+    const bool has_sim = out.sim_target_pos.x >= 0.0f && out.sim_target_pos.y >= 0.0f;
+    const bool has_target_pos = out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f;
+    const float sim_delta_px = (has_sim && has_target_pos)
+                                   ? std::hypot(out.sim_target_pos.x - out.target_pos.x,
+                                                out.sim_target_pos.y - out.target_pos.y)
+                                   : -1.0f;
 
     auto draw_panel = [&](int x, int y, int w, int h, const image::Color &fill, const image::Color &border) {
         (void)fill;
@@ -330,10 +336,17 @@ void draw_pipeline_overlay(
         banner_color = ok_color;
         banner_bg = dark_good_bg;
     } else if (task_active && out.state == TrackState::Tracking) {
-        banner_text = "TRACKING TARGET";
-        banner_sub = out.target_found ? "Servo command is being generated." : "Tracking active.";
-        banner_color = ok_color;
-        banner_bg = dark_good_bg;
+        if (out.target_found) {
+            banner_text = "TRACKING TARGET";
+            banner_sub = "Servo command is being generated.";
+            banner_color = ok_color;
+            banner_bg = dark_good_bg;
+        } else {
+            banner_text = "TRACK LOST HOLD";
+            banner_sub = "Prediction hold active, fallback to safe wait soon.";
+            banner_color = warn_color;
+            banner_bg = dark_warn_bg;
+        }
     } else if (task_active && out.state == TrackState::Locked) {
         banner_text = "LOCKED READY";
         banner_sub = "Locked target, preparing stable tracking.";
@@ -485,6 +498,13 @@ void draw_pipeline_overlay(
     draw_info_line(right_x + 14, info_first_y + info_step * 5, "CMD",
                    task_active ? (!out.command.empty() ? "READY" : "EMPTY") : "IDLE",
                    task_active ? (!out.command.empty() ? ok_color : warn_color) : warn_color);
+    if (sim_delta_px >= 0.0f) {
+        draw_info_line(right_x + 14,
+                       info_preview_y - 22,
+                       "SIM_D",
+                       preview_text(std::to_string(static_cast<int>(sim_delta_px)) + " px", 10),
+                       sim_delta_px >= 3.0f ? ok_color : warn_color);
+    }
     img.draw_string(right_x + 14,
                     info_preview_y,
                     std::string("SIM: ") + preview_text(out.sim_equation, 28),
