@@ -57,6 +57,10 @@ struct PipelineConfig {
     float micro_sim_prediction_hold_sec = 0.45f;
     // Use softer control when only prediction is available
     float micro_sim_pd_gain_scale = 0.65f;
+    // 预测相位提前时间（秒），用于有测量时的前馈融合。
+    float micro_sim_phase_lead_sec = 0.08f;
+    // 有测量时，融合比例：tracking = (1-r)*meas + r*pred_lead
+    float micro_sim_blend_ratio = 0.30f;
 
     // Search scan parameters
     float scan_yaw_amp = 30.0f;
@@ -101,10 +105,13 @@ struct PipelineOutput {
     bool sim_active = false;
     bool sim_ready = false;
     bool sim_predicted = false;
+    bool sim_lead_used = false;
     cv::Point2f sim_target_pos{-1.0f, -1.0f};
+    cv::Point2f sim_lead_pos{-1.0f, -1.0f};
     float sim_angle_rad = 0.0f;
     float sim_speed_rad_s = 0.0f;
     float sim_target_speed_rad_s = 0.0f;
+    std::string sim_equation;
 };
 
 class TargetTrackingPipeline {
@@ -176,7 +183,7 @@ private:
     /// 用测量到的靶心与目标位置同步仿真轨道参数。
     void sync_micro_sim_orbit_from_measurement(const TargetInfo& info);
     /// 在无测量时给出短时预测目标像素坐标。
-    bool get_micro_sim_prediction(float dt, cv::Point2f& out_pos);
+    bool get_micro_sim_prediction(float dt, cv::Point2f& out_pos, bool account_missing = true);
 
     PipelineConfig config_;
     bool control_enabled_ = true;
@@ -206,6 +213,7 @@ private:
     cv::Point2f sim_orbit_center_px_{-1.0f, -1.0f};
     float sim_orbit_radius_px_ = 0.0f;
     bool sim_orbit_valid_ = false;
+    std::string sim_equation_text_;
 
     GimbalControl gimbal_;
     TargetTracker tracker_;

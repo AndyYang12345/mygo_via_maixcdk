@@ -201,6 +201,7 @@ void TargetTracker::reset_roi_tracking() {
     startup_target_position_ = cv::Point2f(-1.0f, -1.0f);
     last_board_position_ = cv::Point2f(-1.0f, -1.0f);
     last_laser_position_ = cv::Point2f(-1.0f, -1.0f);
+    last_target_blob_radius_px_ = 24.0f;
 }
 
 bool TargetTracker::detect_laser_dot(const cv::Mat& frame,
@@ -307,6 +308,7 @@ bool TargetTracker::init_roi_tracking(const cv::Mat& frame, const ColorBlob& tar
 
     target_color_bgr_ = target_blob.mean_color_bgr;
     target_color_hsv_ = bgr_to_hsv(target_color_bgr_);
+    last_target_blob_radius_px_ = std::max(1.0f, static_cast<float>(std::sqrt(target_blob.area / CV_PI)));
     last_target_position_ = target_blob.center;
     if (!has_startup_target_position_) {
         startup_target_position_ = target_blob.center;
@@ -350,10 +352,17 @@ bool TargetTracker::update_roi_tracking(const cv::Mat& frame, TargetInfo& result
     const float predict_speed = cv::norm(predict_point - last_target_position_);
     const float adaptive_padding_f = static_cast<float>(config_.roi_padding) +
                                      config_.roi_velocity_padding_gain * predict_speed;
+    const int target_blob_cap = std::max(
+        config_.roi_padding_from_target_radius_min,
+        static_cast<int>(config_.roi_padding_from_target_radius_gain * last_target_blob_radius_px_) +
+            config_.roi_padding_from_target_radius_bias);
+    const int final_padding_cap = std::max(
+        config_.roi_padding,
+        std::min(std::max(config_.roi_padding, config_.roi_max_padding), target_blob_cap));
     const int adaptive_padding = std::clamp(
         static_cast<int>(std::lround(adaptive_padding_f)),
         config_.roi_padding,
-        std::max(config_.roi_padding, config_.roi_max_padding));
+        final_padding_cap);
 
     cv::Rect roi;
     roi.x = std::max(0, static_cast<int>(predict_point.x) - adaptive_padding);
@@ -370,7 +379,14 @@ bool TargetTracker::update_roi_tracking(const cv::Mat& frame, TargetInfo& result
 
     cv::Point2f detected_center;
     bool rejected_by_circular_shape = false;
-    bool detected = detect_target_in_roi(frame, roi, predict_point, detected_center, rejected_by_circular_shape);
+    float detected_blob_radius_px = -1.0f;
+    bool detected = detect_target_in_roi(
+        frame,
+        roi,
+        predict_point,
+        detected_center,
+        rejected_by_circular_shape,
+        &detected_blob_radius_px);
 
     if (rejected_by_circular_shape) {
         if (config_.print_debug_info) {
@@ -388,6 +404,13 @@ bool TargetTracker::update_roi_tracking(const cv::Mat& frame, TargetInfo& result
 
     if (detected) {
         last_target_position_ = detected_center;
+        if (detected_blob_radius_px > 0.0f) {
+            // 轻度低通，防止单帧形态抖动导致ROI上限剧烈波动。
+            constexpr float kBlobRadiusBlend = 0.35f;
+            last_target_blob_radius_px_ =
+                (1.0f - kBlobRadiusBlend) * last_target_blob_radius_px_ +
+                kBlobRadiusBlend * detected_blob_radius_px;
+        }
         if (config_.use_kalman && kalman_initialized_) {
             cv::Mat measurement = (cv::Mat_<float>(2, 1) << detected_center.x, detected_center.y);
             kalman_.correct(measurement);
@@ -414,7 +437,8 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame,
                                          const cv::Rect& roi,
                                          const cv::Point2f& expected_center_global,
                                          cv::Point2f& out_center,
-                                         bool& rejected_by_circular_shape) {
+                                         bool& rejected_by_circular_shape,
+                                         float* out_blob_radius_px) {
     rejected_by_circular_shape = false;
     cv::Mat roi_bgr = frame(roi);
     cv::Mat roi_hsv;
@@ -452,6 +476,7 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame,
     float best_score = -std::numeric_limits<float>::max();
     cv::Point2f best_center(-1.0f, -1.0f);
     bool best_candidate_is_center_like_circle = false;
+    float best_blob_radius_px = -1.0f;
 
     for (const auto& contour : contours) {
         double area = cv::contourArea(contour);
@@ -503,6 +528,7 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame,
             best_score = score;
             best_center = center_local;
             best_candidate_is_center_like_circle = center_like_circle;
+            best_blob_radius_px = std::sqrt(static_cast<float>(area) / static_cast<float>(CV_PI));
         }
     }
 
@@ -516,6 +542,9 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame,
     }
 
     out_center = cv::Point2f(best_center.x + roi.x, best_center.y + roi.y);
+    if (out_blob_radius_px) {
+        *out_blob_radius_px = best_blob_radius_px;
+    }
     return true;
 }
 

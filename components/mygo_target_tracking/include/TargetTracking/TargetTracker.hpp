@@ -43,6 +43,10 @@ struct TrackerConfig {
     int roi_padding = 80;
     int roi_max_padding = 180;
     float roi_velocity_padding_gain = 1.2f;
+    // 基于目标色块尺寸限制ROI上限，避免窗口过大导致误检。
+    float roi_padding_from_target_radius_gain = 2.8f;
+    int roi_padding_from_target_radius_bias = 20;
+    int roi_padding_from_target_radius_min = 60;
     int roi_min_blob_area = 200;
     int roi_max_blob_area = 8000;
     int roi_hue_threshold = 12;   // 0-180
@@ -176,6 +180,7 @@ private:
     cv::Scalar target_color_hsv_;
     cv::KalmanFilter kalman_;
     bool kalman_initialized_ = false;
+    float last_target_blob_radius_px_ = 24.0f;
     struct ColorSimilarity {
         double bgr_sim;
         double hsv_sim;
@@ -197,7 +202,8 @@ private:
                               const cv::Rect& roi,
                               const cv::Point2f& expected_center_global,
                               cv::Point2f& out_center,
-                              bool& rejected_by_circular_shape);
+                              bool& rejected_by_circular_shape,
+                              float* out_blob_radius_px = nullptr);
     /// 在目标附近检测激光红点位置。
     bool detect_laser_dot(const cv::Mat& frame,
                           const cv::Point2f& target_hint,

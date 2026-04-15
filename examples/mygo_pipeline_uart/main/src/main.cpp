@@ -462,7 +462,7 @@ void draw_pipeline_overlay(
                    task_active ? (!out.command.empty() ? ok_color : warn_color) : warn_color);
     img.draw_string(right_x + 14,
                     info_preview_y,
-                    std::string("FRAME: ") + preview_text(out.command, 28),
+                    std::string("SIM: ") + preview_text(out.sim_equation, 28),
                     panel_text,
                     0.82f,
                     2);
@@ -973,15 +973,16 @@ int _main(int argc, char *argv[])
 
     constexpr int kStreamPort = 8000;
     constexpr uint64_t kStreamIntervalMs = 300;
-    constexpr uint64_t kHeartbeatLogIntervalMs = 100;
     constexpr uint64_t kCmdLogFlushIntervalMs = 500;
     http::JpegStreamer stream("", kStreamPort);
     stream.set_html(kStreamHtml);
     bool stream_active = false;
     log::info("background stream standby: http://%s:%d/stream", stream.host().c_str(), stream.port());
     uint64_t last_stream_ms = time::ticks_ms();
-    uint64_t last_heartbeat_log_ms = last_stream_ms;
     uint64_t last_cmd_log_flush_ms = last_stream_ms;
+    bool last_target_found = false;
+    bool last_recognition_active = false;
+    std::string last_sim_equation;
 
     while (!app::need_exit()) {
         PendingControl control;
@@ -1140,20 +1141,33 @@ int _main(int argc, char *argv[])
 
         last_output = out;
 
-        if ((now_tick_ms - last_heartbeat_log_ms) >= kHeartbeatLogIntervalMs) {
-            log::info(
-                "[HB] frame=%llu run_ms=%llu app=%s track=%s active=%d found=%d laser=%d lost=%d cmd=%s",
-                static_cast<unsigned long long>(frame_index),
-                static_cast<unsigned long long>(now_tick_ms - run_start_ms),
-                vision_app_state_to_text(app_state),
-                state_to_text(out.state),
-                recognition_active ? 1 : 0,
-                out.target_found ? 1 : 0,
-                out.laser_found ? 1 : 0,
-                out.lost_count,
-                preview_text(out.command, 40).c_str());
-            last_heartbeat_log_ms = now_tick_ms;
+        if (recognition_active) {
+            if (!last_recognition_active) {
+                last_target_found = out.target_found;
+            } else if (out.target_found != last_target_found) {
+                if (out.target_found) {
+                    log::info("[VISION] TARGET_FOUND frame=%llu pos=(%.1f,%.1f) state=%s",
+                              static_cast<unsigned long long>(frame_index),
+                              out.target_pos.x,
+                              out.target_pos.y,
+                              state_to_text(out.state));
+                } else {
+                    log::info("[VISION] TARGET_LOST frame=%llu state=%s lost_count=%d",
+                              static_cast<unsigned long long>(frame_index),
+                              state_to_text(out.state),
+                              out.lost_count);
+                }
+                last_target_found = out.target_found;
+            }
+
+            if (!out.sim_equation.empty() && out.sim_equation != last_sim_equation) {
+                log::info("[SIM] equation: %s", out.sim_equation.c_str());
+                last_sim_equation = out.sim_equation;
+            }
+        } else {
+            last_target_found = false;
         }
+        last_recognition_active = recognition_active;
 
         if (cmd_log.is_open()) {
             std::string command_clean = out.command;
