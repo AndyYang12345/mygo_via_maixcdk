@@ -187,10 +187,17 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         } else {
             lost_count_++;
             if (lost_count_ >= config_.lost_required) {
-                state_ = TrackState::Searching;
+                state_ = TrackState::Waiting;
                 lost_count_ = 0;
                 lock_count_ = 0;
                 scan_time_ = 0.0f;
+                pitch_angle_ = config_.pitch_home;
+                yaw_angle_ = config_.yaw_home;
+                pitch_speed_ = 0.0f;
+                yaw_speed_ = 0.0f;
+                reset_pid(pid_pitch_);
+                reset_pid(pid_yaw_);
+                tracker_.reset_roi_tracking();
             }
         }
     } else if (state_ == TrackState::Tracking) {
@@ -240,10 +247,15 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             yaw_speed_ = 0.0f;
             lost_count_++;
             if (lost_count_ >= config_.lost_required) {
-                state_ = TrackState::Searching;
+                state_ = TrackState::Waiting;
                 lost_count_ = 0;
                 lock_count_ = 0;
                 scan_time_ = 0.0f;
+                pitch_angle_ = config_.pitch_home;
+                yaw_angle_ = config_.yaw_home;
+                reset_pid(pid_pitch_);
+                reset_pid(pid_yaw_);
+                tracker_.reset_roi_tracking();
             }
         }
     }
@@ -301,7 +313,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         std::ostringstream mode_line;
         switch (state_) {
             case TrackState::Waiting:
-                mode_line << "Waiting | press SPACE to start scanning";
+                mode_line << "Waiting | home position";
                 break;
             case TrackState::Searching:
                 mode_line << "Searching | lock:" << lock_count_ << "/" << config_.lock_required;
