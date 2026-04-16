@@ -64,7 +64,7 @@ struct PipelineConfig {
     float open_loop_default_distance_mm = 800.0f;  // fallback when no valid estimate
 
     // ROI-based speed identification in Searching state.
-    bool enable_speed_identification = true;
+    bool enable_speed_identification = false;
     float speed_id_warmup_s = 0.30f;
     float speed_id_validate_s = 1.50f;
     int speed_id_min_samples = 20;
@@ -112,6 +112,9 @@ struct PipelineOutput {
     bool speed_identified = false;
     bool speed_identified_event = false;
     float identified_omega_rad_s = 0.0f;
+    float instant_omega_rad_s = 0.0f;
+    float fitted_omega_rad_s = 0.0f;
+    int speed_fit_samples = 0;
     float speed_validation_error_px = -1.0f;
     float speed_validation_tolerance_px = -1.0f;
     float pitch_angle = 0.0f;
@@ -209,6 +212,8 @@ private:
     float open_loop_base_pitch_deg_ = 0.0f;
     float open_loop_base_yaw_deg_ = 0.0f;
     float open_loop_distance_mm_ = -1.0f;
+    float open_loop_locked_omega_rad_s_ = 0.0f;
+    bool open_loop_locked_from_fit_ = false;
     float last_board_distance_mm_ = -1.0f;
 
     bool speed_id_active_ = false;
@@ -220,13 +225,20 @@ private:
     float speed_id_validate_elapsed_s_ = 0.0f;
     float speed_id_phase_init_rad_ = 0.0f;
     float speed_id_last_phase_rad_ = 0.0f;
+    float speed_id_unwrapped_phase_rad_ = 0.0f;
+    float speed_id_unwrapped_phase_start_rad_ = 0.0f;
     float speed_id_omega_rad_s_ = 0.0f;
+    float speed_id_inst_omega_rad_s_ = 0.0f;
     float speed_id_radius_px_ = 0.0f;
     bool speed_id_validation_started_ = false;
     bool speed_id_has_prev_vec_ = false;
     cv::Point2f speed_id_prev_vec_{0.0f, 0.0f};
     float speed_id_omega_sum_rad_s_ = 0.0f;
     int speed_id_omega_count_ = 0;
+    float speed_id_reg_sum_t_ = 0.0f;
+    float speed_id_reg_sum_p_ = 0.0f;
+    float speed_id_reg_sum_tt_ = 0.0f;
+    float speed_id_reg_sum_tp_ = 0.0f;
     float speed_id_last_error_px_ = -1.0f;
     float speed_id_last_tolerance_px_ = -1.0f;
     cv::Point2f speed_id_last_predicted_pos_{-1.0f, -1.0f};

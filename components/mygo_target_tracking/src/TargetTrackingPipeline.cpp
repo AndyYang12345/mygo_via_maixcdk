@@ -72,15 +72,19 @@ void TargetTrackingPipeline::start_tracking() {
         open_loop_phase_rad_ = config_.open_loop_phase_init_rad;
         open_loop_base_pitch_deg_ = pitch_angle_;
         open_loop_base_yaw_deg_ = yaw_angle_;
-        open_loop_distance_mm_ = (last_board_distance_mm_ > 0.0f)
-                                     ? last_board_distance_mm_
-                                     : std::max(1.0f, config_.open_loop_default_distance_mm);
+        open_loop_distance_mm_ = std::max(1.0f, config_.open_loop_default_distance_mm);
+        open_loop_locked_omega_rad_s_ = config_.open_loop_omega_rad_s;
+        open_loop_locked_from_fit_ = false;
+
+        if (speed_id_valid_ &&
+            speed_id_omega_count_ >= std::max(1, config_.speed_id_min_samples) &&
+            std::isfinite(speed_id_omega_rad_s_) &&
+            std::abs(speed_id_omega_rad_s_) > 1e-4f) {
+            open_loop_locked_omega_rad_s_ = speed_id_omega_rad_s_;
+            open_loop_locked_from_fit_ = true;
+        }
     } else {
         open_loop_phase_active_ = false;
-    }
-
-    if (speed_id_valid_) {
-        open_loop_phase_rad_ = speed_id_phase_init_rad_;
     }
 }
 
@@ -108,6 +112,8 @@ void TargetTrackingPipeline::reset() {
     open_loop_base_pitch_deg_ = config_.pitch_home;
     open_loop_base_yaw_deg_ = config_.yaw_home;
     open_loop_distance_mm_ = -1.0f;
+    open_loop_locked_omega_rad_s_ = config_.open_loop_omega_rad_s;
+    open_loop_locked_from_fit_ = false;
     last_board_distance_mm_ = -1.0f;
     speed_id_active_ = false;
     speed_id_valid_ = false;
@@ -118,13 +124,20 @@ void TargetTrackingPipeline::reset() {
     speed_id_validate_elapsed_s_ = 0.0f;
     speed_id_phase_init_rad_ = 0.0f;
     speed_id_last_phase_rad_ = 0.0f;
+    speed_id_unwrapped_phase_rad_ = 0.0f;
+    speed_id_unwrapped_phase_start_rad_ = 0.0f;
     speed_id_omega_rad_s_ = config_.open_loop_omega_rad_s;
+    speed_id_inst_omega_rad_s_ = 0.0f;
     speed_id_radius_px_ = 0.0f;
     speed_id_validation_started_ = false;
     speed_id_has_prev_vec_ = false;
     speed_id_prev_vec_ = cv::Point2f(0.0f, 0.0f);
     speed_id_omega_sum_rad_s_ = 0.0f;
     speed_id_omega_count_ = 0;
+    speed_id_reg_sum_t_ = 0.0f;
+    speed_id_reg_sum_p_ = 0.0f;
+    speed_id_reg_sum_tt_ = 0.0f;
+    speed_id_reg_sum_tp_ = 0.0f;
     speed_id_last_error_px_ = -1.0f;
     speed_id_last_tolerance_px_ = -1.0f;
     speed_id_last_predicted_pos_ = cv::Point2f(-1.0f, -1.0f);
@@ -203,7 +216,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.feedforward_yaw_angle = yaw_angle_;
     output.open_loop_active = false;
     output.open_loop_phase_rad = open_loop_phase_rad_;
-    output.open_loop_omega_rad_s = config_.open_loop_omega_rad_s;
+    output.open_loop_omega_rad_s = open_loop_locked_omega_rad_s_;
     output.open_loop_distance_mm = open_loop_distance_mm_;
     output.predicted_pos_valid = false;
     output.predicted_pos = cv::Point2f(-1.0f, -1.0f);
@@ -211,6 +224,9 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.speed_identified = speed_id_valid_;
     output.speed_identified_event = false;
     output.identified_omega_rad_s = speed_id_valid_ ? speed_id_omega_rad_s_ : config_.open_loop_omega_rad_s;
+    output.instant_omega_rad_s = speed_id_inst_omega_rad_s_;
+    output.fitted_omega_rad_s = speed_id_omega_rad_s_;
+    output.speed_fit_samples = speed_id_omega_count_;
     output.speed_validation_error_px = speed_id_last_error_px_;
     output.speed_validation_tolerance_px = speed_id_last_tolerance_px_;
 
@@ -250,13 +266,20 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                 speed_id_validate_elapsed_s_ = 0.0f;
                 speed_id_phase_init_rad_ = phase_rad;
                 speed_id_last_phase_rad_ = phase_rad;
+                speed_id_unwrapped_phase_rad_ = phase_rad;
+                speed_id_unwrapped_phase_start_rad_ = phase_rad;
                 speed_id_omega_rad_s_ = config_.open_loop_omega_rad_s;
+                speed_id_inst_omega_rad_s_ = 0.0f;
                 speed_id_radius_px_ = radius_px;
                 speed_id_validation_started_ = false;
                 speed_id_has_prev_vec_ = true;
                 speed_id_prev_vec_ = delta;
                 speed_id_omega_sum_rad_s_ = 0.0f;
                 speed_id_omega_count_ = 0;
+                speed_id_reg_sum_t_ = 0.0f;
+                speed_id_reg_sum_p_ = 0.0f;
+                speed_id_reg_sum_tt_ = 0.0f;
+                speed_id_reg_sum_tp_ = 0.0f;
                 speed_id_last_error_px_ = -1.0f;
                 speed_id_last_tolerance_px_ = -1.0f;
                 speed_id_last_predicted_pos_ = info.target_center;
@@ -274,22 +297,31 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                     const float cross = speed_id_prev_vec_.x * delta.y - speed_id_prev_vec_.y * delta.x;
                     const float dot = speed_id_prev_vec_.x * delta.x + speed_id_prev_vec_.y * delta.y;
                     const float dphase = std::atan2(cross, dot);
+                    speed_id_unwrapped_phase_rad_ += dphase;
                     inst_omega = dphase / std::max(1e-4f, dt);
                     inst_omega_valid = std::isfinite(inst_omega);
                 }
                 speed_id_prev_vec_ = delta;
                 speed_id_has_prev_vec_ = true;
                 speed_id_last_phase_rad_ = phase_rad;
+                if (inst_omega_valid) {
+                    speed_id_inst_omega_rad_s_ = inst_omega;
+                }
 
                 speed_id_warmup_elapsed_s_ += dt;
                 if (speed_id_warmup_elapsed_s_ >= config_.speed_id_warmup_s) {
                     if (!speed_id_validation_started_) {
                         speed_id_validation_started_ = true;
                         speed_id_phase_init_rad_ = phase_rad;
+                        speed_id_unwrapped_phase_start_rad_ = speed_id_unwrapped_phase_rad_;
                         speed_id_validate_elapsed_s_ = 0.0f;
                         speed_id_samples_ = 0;
                         speed_id_omega_sum_rad_s_ = 0.0f;
                         speed_id_omega_count_ = 0;
+                        speed_id_reg_sum_t_ = 0.0f;
+                        speed_id_reg_sum_p_ = 0.0f;
+                        speed_id_reg_sum_tt_ = 0.0f;
+                        speed_id_reg_sum_tp_ = 0.0f;
                     } else {
                         speed_id_validate_elapsed_s_ += dt;
                         speed_id_samples_++;
@@ -298,7 +330,25 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                             speed_id_omega_sum_rad_s_ += inst_omega;
                             speed_id_omega_count_++;
                         }
-                        if (speed_id_omega_count_ > 0) {
+
+                        const float t = speed_id_validate_elapsed_s_;
+                        const float p = speed_id_unwrapped_phase_rad_ - speed_id_unwrapped_phase_start_rad_;
+                        speed_id_reg_sum_t_ += t;
+                        speed_id_reg_sum_p_ += p;
+                        speed_id_reg_sum_tt_ += t * t;
+                        speed_id_reg_sum_tp_ += t * p;
+
+                        if (speed_id_samples_ >= 2) {
+                            const float n = static_cast<float>(speed_id_samples_);
+                            const float denom = n * speed_id_reg_sum_tt_ - speed_id_reg_sum_t_ * speed_id_reg_sum_t_;
+                            if (std::abs(denom) > 1e-6f) {
+                                speed_id_omega_rad_s_ =
+                                    (n * speed_id_reg_sum_tp_ - speed_id_reg_sum_t_ * speed_id_reg_sum_p_) / denom;
+                            } else if (speed_id_omega_count_ > 0) {
+                                speed_id_omega_rad_s_ = speed_id_omega_sum_rad_s_ /
+                                                    static_cast<float>(speed_id_omega_count_);
+                            }
+                        } else if (speed_id_omega_count_ > 0) {
                             speed_id_omega_rad_s_ = speed_id_omega_sum_rad_s_ /
                                                     static_cast<float>(speed_id_omega_count_);
                         }
@@ -326,6 +376,9 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                         output.speed_validation_error_px = error_px;
                         output.speed_validation_tolerance_px = tolerance_px;
                         output.identified_omega_rad_s = speed_id_omega_rad_s_;
+                        output.instant_omega_rad_s = speed_id_inst_omega_rad_s_;
+                        output.fitted_omega_rad_s = speed_id_omega_rad_s_;
+                        output.speed_fit_samples = speed_id_samples_;
                     }
                 }
 
@@ -355,6 +408,10 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                         speed_id_prev_vec_ = cv::Point2f(0.0f, 0.0f);
                         speed_id_omega_sum_rad_s_ = 0.0f;
                         speed_id_omega_count_ = 0;
+                        speed_id_reg_sum_t_ = 0.0f;
+                        speed_id_reg_sum_p_ = 0.0f;
+                        speed_id_reg_sum_tt_ = 0.0f;
+                        speed_id_reg_sum_tp_ = 0.0f;
 
                         if (config_.print_debug) {
                             std::cout << "[SpeedID] retry due to prediction mismatch" << std::endl;
@@ -378,6 +435,10 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             speed_id_prev_vec_ = cv::Point2f(0.0f, 0.0f);
             speed_id_omega_sum_rad_s_ = 0.0f;
             speed_id_omega_count_ = 0;
+            speed_id_reg_sum_t_ = 0.0f;
+            speed_id_reg_sum_p_ = 0.0f;
+            speed_id_reg_sum_tt_ = 0.0f;
+            speed_id_reg_sum_tp_ = 0.0f;
 
         if (config_.enable_view_angle_feedforward && has_target && info.view_angle_valid) {
             pitch_angle_ = output.feedforward_pitch_angle;
@@ -448,7 +509,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         yaw_speed_ = 0.0f;
         output.speed_identifying = false;
         output.speed_identified = speed_id_valid_;
-        output.identified_omega_rad_s = speed_id_valid_ ? speed_id_omega_rad_s_ : config_.open_loop_omega_rad_s;
+        output.identified_omega_rad_s = speed_id_valid_ ? speed_id_omega_rad_s_ : open_loop_locked_omega_rad_s_;
         if (speed_id_last_predicted_pos_.x >= 0.0f && speed_id_last_predicted_pos_.y >= 0.0f) {
             output.predicted_pos_valid = true;
             output.predicted_pos = speed_id_last_predicted_pos_;
@@ -466,14 +527,12 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         if (config_.enable_open_loop_phase_orbit && open_loop_phase_active_) {
             const TrackerConfig tracker_cfg = tracker_.get_config();
             const float orbit_radius_mm = std::max(1.0f, tracker_cfg.target_orbit_radius_mm);
-            const float orbit_omega_rad_s = speed_id_valid_ ? speed_id_omega_rad_s_ : config_.open_loop_omega_rad_s;
+            const float orbit_omega_rad_s = open_loop_locked_omega_rad_s_;
             const float board_distance_mm = std::max(
                 1.0f,
-                (last_board_distance_mm_ > 0.0f)
-                    ? last_board_distance_mm_
-                    : ((open_loop_distance_mm_ > 0.0f)
-                           ? open_loop_distance_mm_
-                           : std::max(1.0f, config_.open_loop_default_distance_mm)));
+                (open_loop_distance_mm_ > 0.0f)
+                    ? open_loop_distance_mm_
+                    : std::max(1.0f, config_.open_loop_default_distance_mm));
 
             const float prev_pitch = pitch_angle_;
             const float prev_yaw = yaw_angle_;
@@ -504,7 +563,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             output.view_delta_pitch_rad = pitch_offset_rad;
             output.feedforward_pitch_angle = pitch_angle_;
             output.feedforward_yaw_angle = yaw_angle_;
-            output.speed_identified = speed_id_valid_;
+            output.speed_identified = open_loop_locked_from_fit_;
             output.identified_omega_rad_s = orbit_omega_rad_s;
 
             lost_count_ = 0;
