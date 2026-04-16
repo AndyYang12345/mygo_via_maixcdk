@@ -8,7 +8,6 @@
 #include "TargetTracking/TargetTracker.hpp"
 
 enum class TrackState { Waiting, Searching, Locked, Tracking };
-enum class MicroSimMode { Disabled = 0, SmallFixed = 1, BigVariable = 2 };
 
 struct PipelineConfig {
     // Camera intrinsics (set <0 to auto from frame size)
@@ -40,37 +39,6 @@ struct PipelineConfig {
     int lock_required = 30;
     int lost_required = 10;
 
-    // Micro simulation (prediction assist)
-    bool enable_micro_sim = false;
-    MicroSimMode micro_sim_mode = MicroSimMode::Disabled;
-    // Small energy mechanism: fixed speed = pi/3 rad/s
-    float micro_sim_small_speed_rad_s = static_cast<float>(CV_PI) / 3.0f;
-    // Big energy mechanism: spd = a * sin(omega * t) + b, b = 2.090 - a
-    float micro_sim_big_a_min = 0.780f;
-    float micro_sim_big_a_max = 1.045f;
-    float micro_sim_big_omega_min = 1.884f;
-    float micro_sim_big_omega_max = 2.000f;
-    bool micro_sim_random_direction = true;
-    // Real speed follows target speed with first-order lag, <= 500 ms
-    float micro_sim_speed_lag_sec = 0.5f;
-    // Max time to trust prediction-only control when vision is missing
-    float micro_sim_prediction_hold_sec = 0.45f;
-    // Use softer control when only prediction is available
-    float micro_sim_pd_gain_scale = 0.65f;
-    // 兼容保留：固定相位提前时间（秒），角速度过小时兜底使用。
-    float micro_sim_phase_lead_sec = 0.18f;
-    // 目标固定相位提前角（度），默认约10度。
-    float micro_sim_phase_lead_deg = 10.0f;
-    // 相位提前时间上限，防止低速时外推过远。
-    float micro_sim_phase_lead_max_sec = 0.30f;
-    // 有测量时，融合比例：tracking = (1-r)*meas + r*pred_lead
-    float micro_sim_blend_ratio = 0.30f;
-
-    // 预测点融合卡尔曼（用于最终舵机驱动目标）
-    bool enable_target_fusion_kalman = true;
-    // 仅预测点可用时，校正权重（越小越保守）
-    float target_fusion_sim_only_weight = 0.35f;
-
     // Search scan parameters
     float scan_yaw_amp = 30.0f;
     float scan_pitch_amp = 30.0f;
@@ -99,7 +67,6 @@ struct PipelineOutput {
     int lock_count = 0;
     int lost_count = 0;
     bool target_found = false;
-    bool target_from_roi = false;
     cv::Point2f target_pos{-1.0f, -1.0f};
     bool roi_active = false;
     cv::Rect roi_rect{-1, -1, 0, 0};
@@ -112,16 +79,6 @@ struct PipelineOutput {
     float yaw_angle = 0.0f;
     float pitch_speed = 0.0f;
     float yaw_speed = 0.0f;
-    bool sim_active = false;
-    bool sim_ready = false;
-    bool sim_predicted = false;
-    bool sim_lead_used = false;
-    cv::Point2f sim_target_pos{-1.0f, -1.0f};
-    cv::Point2f sim_lead_pos{-1.0f, -1.0f};
-    float sim_angle_rad = 0.0f;
-    float sim_speed_rad_s = 0.0f;
-    float sim_target_speed_rad_s = 0.0f;
-    std::string sim_equation;
 };
 
 class TargetTrackingPipeline {
@@ -181,29 +138,11 @@ private:
     /// 将数值限制在区间 [lo, hi] 内。
     float clamp_value(float v, float lo, float hi) const;
     /// 计算单步PID输出速度命令。
-    float pid_step(float error, float dt, PID& pid, float integral_limit, bool allow_integral = true);
+        float pid_step(float error, float dt, PID& pid, float integral_limit, bool allow_integral = true);
     /// 清空PID积分与历史误差。
     void reset_pid(PID& pid);
     /// 把配置中的PID参数写入俯仰/偏航控制器。
     void apply_pid_gains_from_config();
-    /// 重置微仿真内部状态并重采样大能量参数。
-    void reset_micro_sim_state();
-    /// 按配置更新微仿真角速度和角度状态。
-    void update_micro_sim_dynamics(float dt);
-    /// 用测量到的靶心与目标位置同步仿真轨道参数。
-    void sync_micro_sim_orbit_from_measurement(const TargetInfo& info, float dt);
-    /// 在无测量时给出短时预测目标像素坐标。
-    bool get_micro_sim_prediction(float dt, cv::Point2f& out_pos, bool account_missing = true);
-    /// 由“提前角度”换算当前帧的提前时间。
-    float get_micro_sim_phase_lead_time_sec() const;
-    /// 重置用于舵机目标融合的卡尔曼滤波器。
-    void reset_target_fusion_kalman();
-    /// 确保卡尔曼已初始化（必要时用给定点初始化）。
-    void ensure_target_fusion_kalman_initialized(const cv::Point2f& init_pos);
-    /// 预测融合卡尔曼状态并返回预测位置。
-    cv::Point2f predict_target_fusion_kalman(float dt);
-    /// 使用加权观测校正融合卡尔曼并返回校正位置。
-    cv::Point2f correct_target_fusion_kalman(const cv::Point2f& measurement, float measurement_weight);
 
     PipelineConfig config_;
     bool control_enabled_ = true;
@@ -219,28 +158,6 @@ private:
 
     PID pid_pitch_;
     PID pid_yaw_;
-
-    bool sim_initialized_ = false;
-    float sim_time_ = 0.0f;
-    float sim_angle_rad_ = 0.0f;
-    float sim_speed_rad_s_ = 0.0f;
-    float sim_target_speed_rad_s_ = 0.0f;
-    float sim_no_measure_time_ = 0.0f;
-    int sim_direction_sign_ = 1;
-    float sim_big_a_ = 0.900f;
-    float sim_big_omega_ = 1.950f;
-    float sim_big_b_ = 1.190f;
-    float sim_measured_omega_rad_s_ = 0.0f;
-    float sim_last_measured_angle_rad_ = 0.0f;
-    bool sim_has_last_measured_angle_ = false;
-    cv::Point2f sim_orbit_center_px_{-1.0f, -1.0f};
-    float sim_orbit_radius_px_ = 0.0f;
-    bool sim_orbit_valid_ = false;
-    std::string sim_equation_text_;
-
-    cv::KalmanFilter target_fusion_kf_;
-    bool target_fusion_kf_initialized_ = false;
-    cv::Point2f target_fusion_last_pos_{-1.0f, -1.0f};
 
     GimbalControl gimbal_;
     TargetTracker tracker_;

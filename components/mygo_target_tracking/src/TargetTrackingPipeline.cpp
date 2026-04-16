@@ -401,9 +401,11 @@ float TargetTrackingPipeline::clamp_value(float v, float lo, float hi) const {
     return std::max(lo, std::min(v, hi));
 }
 
-float TargetTrackingPipeline::pid_step(float error, float dt, PID& pid, float integral_limit) {
-    pid.integral += error * dt;
-    pid.integral = clamp_value(pid.integral, -integral_limit, integral_limit);
+float TargetTrackingPipeline::pid_step(float error, float dt, PID& pid, float integral_limit, bool allow_integral) {
+    if (allow_integral) {
+        pid.integral += error * dt;
+        pid.integral = clamp_value(pid.integral, -integral_limit, integral_limit);
+    }
 
     float derivative = 0.0f;
     if (pid.has_prev && dt > 1e-6f) {
