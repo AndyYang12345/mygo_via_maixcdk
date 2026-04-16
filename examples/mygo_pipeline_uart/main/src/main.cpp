@@ -70,8 +70,11 @@ struct VisionStatusSnapshot {
     bool can_scan{false};
     bool target_found{false};
     bool laser_found{false};
+    int lost_count{0};
     int target_x{-1};
     int target_y{-1};
+    uint64_t frame_index{0};
+    uint64_t run_ms{0};
     std::string command;
 };
 
@@ -79,6 +82,8 @@ struct PendingControl {
     bool recognition_start_requested{false};
     bool tracking_start_requested{false};
     bool stop_requested{false};
+    bool sim_mode_update_valid{false};
+    uint8_t sim_mode{0xFF};
     bool tracking_init_pose_valid{false};
     int init_yaw_pwm{1500};
     int init_pitch_pwm{1500};
@@ -227,6 +232,7 @@ void draw_pipeline_overlay(
     const PipelineOutput &out,
     VisionAppState app_state,
     bool task_active,
+    bool tracking_enabled,
     bool tcp_listening,
     bool tcp_client_connected,
     int tcp_port)
@@ -267,6 +273,12 @@ void draw_pipeline_overlay(
     const int info_first_y = info_y + 46;
     const int info_preview_y = info_y + info_h - 24;
     const int info_step = std::max(18, (info_preview_y - info_first_y - 4) / 6);
+    const bool has_sim = out.sim_target_pos.x >= 0.0f && out.sim_target_pos.y >= 0.0f;
+    const bool has_target_pos = out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f;
+    const float sim_delta_px = (has_sim && has_target_pos)
+                                   ? std::hypot(out.sim_target_pos.x - out.target_pos.x,
+                                                out.sim_target_pos.y - out.target_pos.y)
+                                   : -1.0f;
 
     auto draw_panel = [&](int x, int y, int w, int h, const image::Color &fill, const image::Color &border) {
         (void)fill;
@@ -318,11 +330,23 @@ void draw_pipeline_overlay(
         banner_sub = "Recognition is closed. Waiting host start command.";
         banner_color = warn_color;
         banner_bg = dark_warn_bg;
-    } else if (task_active && out.state == TrackState::Tracking) {
-        banner_text = "TRACKING TARGET";
-        banner_sub = out.target_found ? "Servo command is being generated." : "Tracking active.";
+    } else if (task_active && !tracking_enabled && out.sim_ready) {
+        banner_text = "WaitingToStart";
+        banner_sub = "Simulation ready. Press A to start tracking.";
         banner_color = ok_color;
         banner_bg = dark_good_bg;
+    } else if (task_active && out.state == TrackState::Tracking) {
+        if (out.target_found) {
+            banner_text = "TRACKING TARGET";
+            banner_sub = "Servo command is being generated.";
+            banner_color = ok_color;
+            banner_bg = dark_good_bg;
+        } else {
+            banner_text = "TRACK LOST HOLD";
+            banner_sub = "Prediction hold active, fallback to safe wait soon.";
+            banner_color = warn_color;
+            banner_bg = dark_warn_bg;
+        }
     } else if (task_active && out.state == TrackState::Locked) {
         banner_text = "LOCKED READY";
         banner_sub = "Locked target, preparing stable tracking.";
@@ -341,6 +365,7 @@ void draw_pipeline_overlay(
     }
 
     if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
+        const std::string target_label = out.target_from_roi ? "target(roi)" : "target(full)";
         img.draw_rect(static_cast<int>(out.target_pos.x) - 3,
                       static_cast<int>(out.target_pos.y) - 3,
                       7,
@@ -349,9 +374,33 @@ void draw_pipeline_overlay(
                       2);
         img.draw_string(static_cast<int>(out.target_pos.x) + 6,
                         static_cast<int>(out.target_pos.y) - 10,
-                        "target",
+                        target_label,
                         target_color,
                         1.2f);
+    }
+
+    if (out.sim_target_pos.x >= 0.0f && out.sim_target_pos.y >= 0.0f) {
+        const image::Color sim_color = image::Color::from_rgb(255, 0, 255);
+        img.draw_rect(static_cast<int>(out.sim_target_pos.x) - 3,
+                      static_cast<int>(out.sim_target_pos.y) - 3,
+                      7,
+                      7,
+                      sim_color,
+                      2);
+        img.draw_string(static_cast<int>(out.sim_target_pos.x) + 6,
+                        static_cast<int>(out.sim_target_pos.y) + 10,
+                        "sim_pred",
+                        sim_color,
+                        1.0f);
+
+        if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
+            img.draw_line(static_cast<int>(out.target_pos.x),
+                          static_cast<int>(out.target_pos.y),
+                          static_cast<int>(out.sim_target_pos.x),
+                          static_cast<int>(out.sim_target_pos.y),
+                          image::Color::from_rgb(255, 170, 0),
+                          1);
+        }
     }
 
     if (out.roi_active && out.roi_rect.width > 0 && out.roi_rect.height > 0) {
@@ -449,9 +498,16 @@ void draw_pipeline_overlay(
     draw_info_line(right_x + 14, info_first_y + info_step * 5, "CMD",
                    task_active ? (!out.command.empty() ? "READY" : "EMPTY") : "IDLE",
                    task_active ? (!out.command.empty() ? ok_color : warn_color) : warn_color);
+    if (sim_delta_px >= 0.0f) {
+        draw_info_line(right_x + 14,
+                       info_preview_y - 22,
+                       "SIM_D",
+                       preview_text(std::to_string(static_cast<int>(sim_delta_px)) + " px", 10),
+                       sim_delta_px >= 3.0f ? ok_color : warn_color);
+    }
     img.draw_string(right_x + 14,
                     info_preview_y,
-                    std::string("FRAME: ") + preview_text(out.command, 28),
+                    std::string("SIM: ") + preview_text(out.sim_equation, 28),
                     panel_text,
                     0.82f,
                     2);
@@ -707,6 +763,9 @@ private:
         append_cstr(body, snapshot.can_scan ? "1" : "0");
         append_cstr(body, std::to_string(snapshot.target_x));
         append_cstr(body, std::to_string(snapshot.target_y));
+        append_cstr(body, std::to_string(snapshot.lost_count));
+        append_cstr(body, std::to_string(snapshot.frame_index));
+        append_cstr(body, std::to_string(snapshot.run_ms));
         return body;
     }
 
@@ -779,6 +838,16 @@ private:
                     control.init_yaw_pwm = std::clamp(yaw_pwm, 500, 2500);
                     control.init_pitch_pwm = std::clamp(pitch_pwm, 500, 2500);
                     control.tracking_init_pose_valid = true;
+                }
+                if (frame.body.size() >= 6 && frame.body[0] == 0xFE) {
+                    control.tracking_start_requested = (frame.body[5] != 0U);
+                }
+                if (frame.body.size() >= 7 && frame.body[0] == 0xFE) {
+                    const uint8_t sim_mode = frame.body[6];
+                    if (sim_mode <= 2U) {
+                        control.sim_mode_update_valid = true;
+                        control.sim_mode = sim_mode;
+                    }
                 }
                 return encode_resp_ok(frame.cmd, {});
             }
@@ -944,6 +1013,7 @@ int _main(int argc, char *argv[])
     VisionAppState app_state = VisionAppState::Idle;
     bool recognition_active = false;
     bool tracking_enabled = false;
+    bool waiting_to_start = false;
     uint64_t run_start_ms = time::ticks_ms();
     uint64_t frame_index = 0;
     uint64_t last_tick_ms = time::ticks_ms();
@@ -961,9 +1031,13 @@ int _main(int argc, char *argv[])
     log::info("background stream standby: http://%s:%d/stream", stream.host().c_str(), stream.port());
     uint64_t last_stream_ms = time::ticks_ms();
     uint64_t last_cmd_log_flush_ms = last_stream_ms;
+    bool last_target_found = false;
+    bool last_recognition_active = false;
+    std::string last_sim_equation;
 
     while (!app::need_exit()) {
         PendingControl control;
+        const uint64_t now_tick_ms_snapshot = time::ticks_ms();
         VisionStatusSnapshot snapshot;
         snapshot.app_state = app_state;
         snapshot.tracking_state = recognition_active ? state_to_text(last_output.state) : "Stopped";
@@ -972,6 +1046,7 @@ int _main(int argc, char *argv[])
         snapshot.can_scan = recognition_active && !tracking_enabled;
         snapshot.target_found = recognition_active ? last_output.target_found : false;
         snapshot.laser_found = recognition_active ? last_output.laser_found : false;
+        snapshot.lost_count = recognition_active ? last_output.lost_count : 0;
         snapshot.target_x = (recognition_active && last_output.target_found)
                     ? static_cast<int>(std::lround(last_output.target_pos.x))
                     : -1;
@@ -979,11 +1054,39 @@ int _main(int argc, char *argv[])
                     ? static_cast<int>(std::lround(last_output.target_pos.y))
                     : -1;
         snapshot.command = tracking_enabled ? last_output.command : "";
+        snapshot.frame_index = frame_index;
+        snapshot.run_ms = now_tick_ms_snapshot - run_start_ms;
         tcp_server.poll(snapshot, control);
+
+        if (control.sim_mode_update_valid) {
+            PipelineConfig updated_cfg = pipeline.get_config();
+            switch (control.sim_mode) {
+                case 0:
+                    updated_cfg.enable_micro_sim = false;
+                    updated_cfg.micro_sim_mode = MicroSimMode::Disabled;
+                    log::info("sim mode update: OFF");
+                    break;
+                case 1:
+                    updated_cfg.enable_micro_sim = true;
+                    updated_cfg.micro_sim_mode = MicroSimMode::SmallFixed;
+                    log::info("sim mode update: SMALL");
+                    break;
+                case 2:
+                    updated_cfg.enable_micro_sim = true;
+                    updated_cfg.micro_sim_mode = MicroSimMode::BigVariable;
+                    log::info("sim mode update: BIG");
+                    break;
+                default:
+                    break;
+            }
+            pipeline.set_config(updated_cfg);
+            waiting_to_start = false;
+        }
 
         if (control.stop_requested) {
             recognition_active = false;
             tracking_enabled = false;
+            waiting_to_start = false;
             app_state = VisionAppState::Stopped;
             pipeline.reset();
             pipeline.set_control_enabled(false);
@@ -1008,6 +1111,7 @@ int _main(int argc, char *argv[])
                 last_state = TrackState::Waiting;
             }
             tracking_enabled = true;
+            waiting_to_start = false;
             pipeline.set_control_enabled(true);
             if (control.tracking_init_pose_valid) {
                 const float yaw_deg = pwm_to_angle_deg(control.init_yaw_pwm, cfg.yaw_pwm_zero_angle);
@@ -1033,6 +1137,7 @@ int _main(int argc, char *argv[])
             pipeline.handle_key(' ');
             recognition_active = true;
             tracking_enabled = false;
+            waiting_to_start = false;
             app_state = VisionAppState::Running;
             last_state = TrackState::Waiting;
             if (!stream_active) {
@@ -1075,6 +1180,10 @@ int _main(int argc, char *argv[])
                 pipeline.start_tracking();
                 log::info("[AUTO] Locked -> Tracking");
             }
+
+            if (!tracking_enabled && out.sim_ready) {
+                waiting_to_start = true;
+            }
             last_state = out.state;
         } else {
             out.state = TrackState::Waiting;
@@ -1082,6 +1191,34 @@ int _main(int argc, char *argv[])
         }
 
         last_output = out;
+
+        if (recognition_active) {
+            if (!last_recognition_active) {
+                last_target_found = out.target_found;
+            } else if (out.target_found != last_target_found) {
+                if (out.target_found) {
+                    log::info("[VISION] TARGET_FOUND frame=%llu pos=(%.1f,%.1f) state=%s",
+                              static_cast<unsigned long long>(frame_index),
+                              out.target_pos.x,
+                              out.target_pos.y,
+                              state_to_text(out.state));
+                } else {
+                    log::info("[VISION] TARGET_LOST frame=%llu state=%s lost_count=%d",
+                              static_cast<unsigned long long>(frame_index),
+                              state_to_text(out.state),
+                              out.lost_count);
+                }
+                last_target_found = out.target_found;
+            }
+
+            if (!out.sim_equation.empty() && out.sim_equation != last_sim_equation) {
+                log::info("[SIM] equation: %s", out.sim_equation.c_str());
+                last_sim_equation = out.sim_equation;
+            }
+        } else {
+            last_target_found = false;
+        }
+        last_recognition_active = recognition_active;
 
         if (cmd_log.is_open()) {
             std::string command_clean = out.command;
@@ -1108,9 +1245,14 @@ int _main(int argc, char *argv[])
                               out,
                               app_state,
                               recognition_active,
+                              tracking_enabled,
                               tcp_server.is_listening(),
                               tcp_server.is_client_connected(),
                               tcp_port);
+
+        if (waiting_to_start && recognition_active && !tracking_enabled) {
+            img->draw_string(24, 24, "WaitingToStart", image::Color::from_rgb(0, 255, 120), 1.3f, 2);
+        }
 
         if (stream_active && recognition_active && tcp_server.is_client_connected() &&
             (now_tick_ms - last_stream_ms) >= kStreamIntervalMs) {
