@@ -62,11 +62,16 @@ struct PipelineConfig {
     float open_loop_omega_rad_s = 1.0471976f;      // default: pi/3 rad/s
     float open_loop_phase_init_rad = 0.0f;
     float open_loop_default_distance_mm = 800.0f;  // fallback when no valid estimate
-    bool enable_target_rpm_measurement = true;     // measure target rotation speed from frame-to-frame phase change
-    float target_rpm_lowpass_alpha = 0.2f;         // exponential moving average: w_smooth = alpha*w_new + (1-alpha)*w_old
-    float open_loop_speed_measure_time_s = 1.0f;   // measure speed only at tracking start
-    int open_loop_speed_measure_min_samples = 8;
-    float open_loop_speed_max_abs_rad_s = 6.0f;    // reject impossible speed spikes
+
+    // ROI-based speed identification in Searching state.
+    bool enable_speed_identification = true;
+    float speed_id_warmup_s = 0.30f;
+    float speed_id_validate_s = 1.50f;
+    int speed_id_min_samples = 20;
+    float speed_id_omega_smooth_alpha = 0.20f;
+    float speed_id_radius_smooth_alpha = 0.15f;
+    float speed_id_roi_tolerance_ratio = 0.45f;
+    float speed_id_min_tolerance_px = 12.0f;
 
     // Serial
     bool enable_serial = false;
@@ -101,9 +106,14 @@ struct PipelineOutput {
     float open_loop_phase_rad = 0.0f;
     float open_loop_omega_rad_s = 0.0f;
     float open_loop_distance_mm = -1.0f;
-    float measured_target_omega_rad_s = 0.0f;     // measured rotation speed of target from vision
-    float recognized_target_phase_rad = 0.0f;
-    bool open_loop_speed_locked = false;
+    bool predicted_pos_valid = false;
+    cv::Point2f predicted_pos{-1.0f, -1.0f};
+    bool speed_identifying = false;
+    bool speed_identified = false;
+    bool speed_identified_event = false;
+    float identified_omega_rad_s = 0.0f;
+    float speed_validation_error_px = -1.0f;
+    float speed_validation_tolerance_px = -1.0f;
     float pitch_angle = 0.0f;
     float yaw_angle = 0.0f;
     float pitch_speed = 0.0f;
@@ -201,13 +211,25 @@ private:
     float open_loop_distance_mm_ = -1.0f;
     float last_board_distance_mm_ = -1.0f;
 
-    float last_target_phase_rad_ = 0.0f;
-    float measured_omega_rad_s_ = 0.0f;            // exponential moving average of target omega
-    bool has_valid_last_phase_ = false;
-    float speed_measure_elapsed_s_ = 0.0f;
-    int speed_measure_samples_ = 0;
-    bool open_loop_speed_locked_ = false;
-    float locked_open_loop_omega_rad_s_ = 0.0f;
+    bool speed_id_active_ = false;
+    bool speed_id_valid_ = false;
+    bool speed_id_event_pending_ = false;
+    int speed_id_samples_ = 0;
+    bool speed_id_all_in_roi_ = true;
+    float speed_id_warmup_elapsed_s_ = 0.0f;
+    float speed_id_validate_elapsed_s_ = 0.0f;
+    float speed_id_phase_init_rad_ = 0.0f;
+    float speed_id_last_phase_rad_ = 0.0f;
+    float speed_id_omega_rad_s_ = 0.0f;
+    float speed_id_radius_px_ = 0.0f;
+    bool speed_id_validation_started_ = false;
+    bool speed_id_has_prev_vec_ = false;
+    cv::Point2f speed_id_prev_vec_{0.0f, 0.0f};
+    float speed_id_omega_sum_rad_s_ = 0.0f;
+    int speed_id_omega_count_ = 0;
+    float speed_id_last_error_px_ = -1.0f;
+    float speed_id_last_tolerance_px_ = -1.0f;
+    cv::Point2f speed_id_last_predicted_pos_{-1.0f, -1.0f};
 
     GimbalControl gimbal_;
     TargetTracker tracker_;

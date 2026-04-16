@@ -246,6 +246,7 @@ void draw_pipeline_overlay(
     const image::Color dark_info_bg = image::Color::from_rgb(10, 38, 76);
     const image::Color hit_color = ok_color;
     const image::Color miss_color = warn_color;
+    const image::Color pred_color = image::Color::from_rgb(255, 96, 255);
 
     const int width = img.width();
     const int height = img.height();
@@ -384,6 +385,23 @@ void draw_pipeline_overlay(
                       static_cast<int>(out.laser_pos.y),
                       detect_hit ? hit_color : miss_color,
                       2);
+    }
+
+    if (out.predicted_pos_valid && out.predicted_pos.x >= 0.0f && out.predicted_pos.y >= 0.0f) {
+        const int px = static_cast<int>(out.predicted_pos.x);
+        const int py = static_cast<int>(out.predicted_pos.y);
+        img.draw_line(px - 7, py - 7, px + 7, py + 7, pred_color, 2);
+        img.draw_line(px - 7, py + 7, px + 7, py - 7, pred_color, 2);
+        img.draw_string(px + 8, py - 10, "pred", pred_color, 1.0f);
+
+        if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
+            img.draw_line(px,
+                          py,
+                          static_cast<int>(out.target_pos.x),
+                          static_cast<int>(out.target_pos.y),
+                          pred_color,
+                          1);
+        }
     }
 
     if (out.aim_pos.x >= 0.0f && out.aim_pos.y >= 0.0f) {
@@ -1090,6 +1108,34 @@ int _main(int argc, char *argv[])
             pipeline.set_control_enabled(recognition_active);
             out = pipeline.process_frame(frame, dt);
 
+            if (!tracking_enabled && out.target_found && out.board_distance_mm > 0.0f) {
+                log::info("global recognition distance estimate: %.1f mm (target=(%.1f, %.1f), board=(%.1f, %.1f))",
+                          out.board_distance_mm,
+                          out.target_pos.x,
+                          out.target_pos.y,
+                          out.board_pos.x,
+                          out.board_pos.y);
+                if (out.view_angle_valid) {
+                    log::info("feedforward servo angles: pitch=%.2f deg yaw=%.2f deg (d_pitch=%.4f rad, d_yaw=%.4f rad)",
+                              out.feedforward_pitch_angle,
+                              out.feedforward_yaw_angle,
+                              out.view_delta_pitch_rad,
+                              out.view_delta_yaw_rad);
+                }
+            }
+
+            if (!tracking_enabled && out.speed_identifying && out.predicted_pos_valid) {
+                log::info("speed-id validating: omega=%.4f rad/s err=%.2f/%.2f px",
+                          out.identified_omega_rad_s,
+                          out.speed_validation_error_px,
+                          out.speed_validation_tolerance_px);
+            }
+
+            if (!tracking_enabled && out.speed_identified_event) {
+                log::info("speed-id success -> LOCKED (omega=%.4f rad/s), waiting tracking start",
+                          out.identified_omega_rad_s);
+            }
+
             if (out.state != last_state) {
                 log::info("[STATE] %s -> %s",
                           state_to_text(last_state),
@@ -1102,9 +1148,12 @@ int _main(int argc, char *argv[])
             }
 
             if (tracking_enabled && out.open_loop_active) {
-                log::info("open-loop: omega=%.4f rad/s phase=%.3f rad",
-                          out.measured_target_omega_rad_s,
-                          out.open_loop_phase_rad);
+                log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f",
+                          out.open_loop_phase_rad,
+                          out.open_loop_omega_rad_s,
+                          out.open_loop_distance_mm,
+                          out.pitch_angle,
+                          out.yaw_angle);
             }
             last_state = out.state;
         } else {
