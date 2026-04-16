@@ -1059,7 +1059,7 @@ int _main(int argc, char *argv[])
         if (recognition_active) {
             cv::Mat frame;
             maix::image::image2cv(*img, frame, true, true);
-            pipeline.set_control_enabled(tracking_enabled);
+            pipeline.set_control_enabled(recognition_active);
             out = pipeline.process_frame(frame, dt);
 
             if (out.state != last_state) {
