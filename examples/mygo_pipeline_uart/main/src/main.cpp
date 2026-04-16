@@ -925,6 +925,10 @@ int _main(int argc, char *argv[])
     cfg.draw_overlay = false;
     cfg.print_debug = false;
     cfg.enable_view_angle_feedforward = true;
+    cfg.enable_open_loop_phase_orbit = true;
+    cfg.open_loop_omega_rad_s = 1.0471976f; // pi/3 rad/s
+    cfg.open_loop_phase_init_rad = 0.0f;
+    cfg.open_loop_default_distance_mm = nominal_target_distance_mm;
     pipeline.set_config(cfg);
     log::info("aim center compensation: laser_offset_up=%.2fmm, distance=%.2fmm, px_per_mm=%.4f, cy_shift=%.2fpx, cy=%.2f",
               laser_offset_up_mm,
@@ -1045,7 +1049,9 @@ int _main(int argc, char *argv[])
                 stream_active = false;
                 log::info("background stream stopped (tracking start)");
             }
-            log::info("vision tracking enabled by tcp command");
+            log::info("vision tracking enabled by tcp command (open_loop=%d, omega=%.4f rad/s)",
+                      cfg.enable_open_loop_phase_orbit ? 1 : 0,
+                      cfg.open_loop_omega_rad_s);
         } else if (control.recognition_start_requested) {
             pipeline.reset();
             pipeline.set_control_enabled(true);
@@ -1109,6 +1115,15 @@ int _main(int argc, char *argv[])
             if (auto_start_tracking && tracking_enabled && out.state == TrackState::Locked) {
                 pipeline.start_tracking();
                 log::info("[AUTO] Locked -> Tracking");
+            }
+
+            if (tracking_enabled && out.open_loop_active) {
+                log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f",
+                          out.open_loop_phase_rad,
+                          out.open_loop_omega_rad_s,
+                          out.open_loop_distance_mm,
+                          out.pitch_angle,
+                          out.yaw_angle);
             }
             last_state = out.state;
         } else {

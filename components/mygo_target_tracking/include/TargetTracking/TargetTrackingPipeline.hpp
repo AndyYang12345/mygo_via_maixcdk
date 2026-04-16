@@ -56,6 +56,13 @@ struct PipelineConfig {
     bool control_enabled = true;
     bool enable_view_angle_feedforward = false;
 
+    // Debug open-loop orbit mode in Tracking state:
+    // use phase(t)=phase0+omega*t to generate servo angles without visual PID.
+    bool enable_open_loop_phase_orbit = false;
+    float open_loop_omega_rad_s = 1.0471976f;      // default: pi/3 rad/s
+    float open_loop_phase_init_rad = 0.0f;
+    float open_loop_default_distance_mm = 800.0f;  // fallback when no valid estimate
+
     // Serial
     bool enable_serial = false;
     std::string serial_device = "/dev/ttyUSB0";
@@ -85,6 +92,10 @@ struct PipelineOutput {
     float view_delta_pitch_rad = 0.0f;
     float feedforward_pitch_angle = 0.0f;
     float feedforward_yaw_angle = 0.0f;
+    bool open_loop_active = false;
+    float open_loop_phase_rad = 0.0f;
+    float open_loop_omega_rad_s = 0.0f;
+    float open_loop_distance_mm = -1.0f;
     float pitch_angle = 0.0f;
     float yaw_angle = 0.0f;
     float pitch_speed = 0.0f;
@@ -174,6 +185,13 @@ private:
 
     PID pid_pitch_;
     PID pid_yaw_;
+
+    bool open_loop_phase_active_ = false;
+    float open_loop_phase_rad_ = 0.0f;
+    float open_loop_base_pitch_deg_ = 0.0f;
+    float open_loop_base_yaw_deg_ = 0.0f;
+    float open_loop_distance_mm_ = -1.0f;
+    float last_board_distance_mm_ = -1.0f;
 
     GimbalControl gimbal_;
     TargetTracker tracker_;

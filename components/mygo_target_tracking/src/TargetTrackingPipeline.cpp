@@ -54,6 +54,18 @@ void TargetTrackingPipeline::start_tracking() {
     lost_count_ = 0;
     reset_pid(pid_pitch_);
     reset_pid(pid_yaw_);
+
+    if (config_.enable_open_loop_phase_orbit) {
+        open_loop_phase_active_ = true;
+        open_loop_phase_rad_ = config_.open_loop_phase_init_rad;
+        open_loop_base_pitch_deg_ = pitch_angle_;
+        open_loop_base_yaw_deg_ = yaw_angle_;
+        open_loop_distance_mm_ = (last_board_distance_mm_ > 0.0f)
+                                     ? last_board_distance_mm_
+                                     : std::max(1.0f, config_.open_loop_default_distance_mm);
+    } else {
+        open_loop_phase_active_ = false;
+    }
 }
 
 void TargetTrackingPipeline::set_current_angles(float pitch_deg, float yaw_deg) {
@@ -75,6 +87,12 @@ void TargetTrackingPipeline::reset() {
     reset_pid(pid_pitch_);
     reset_pid(pid_yaw_);
     tracker_.reset_roi_tracking();
+    open_loop_phase_active_ = false;
+    open_loop_phase_rad_ = 0.0f;
+    open_loop_base_pitch_deg_ = config_.pitch_home;
+    open_loop_base_yaw_deg_ = config_.yaw_home;
+    open_loop_distance_mm_ = -1.0f;
+    last_board_distance_mm_ = -1.0f;
 }
 
 void TargetTrackingPipeline::handle_key(int key) {
@@ -148,6 +166,14 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.view_delta_pitch_rad = 0.0f;
     output.feedforward_pitch_angle = pitch_angle_;
     output.feedforward_yaw_angle = yaw_angle_;
+    output.open_loop_active = false;
+    output.open_loop_phase_rad = open_loop_phase_rad_;
+    output.open_loop_omega_rad_s = config_.open_loop_omega_rad_s;
+    output.open_loop_distance_mm = open_loop_distance_mm_;
+
+    if (info.board_distance_mm > 0.0f) {
+        last_board_distance_mm_ = info.board_distance_mm;
+    }
 
     if (info.view_angle_valid) {
         output.view_delta_yaw_rad = info.view_delta_x[0];
@@ -243,7 +269,51 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             }
         }
     } else if (state_ == TrackState::Tracking) {
-        if (!control_enabled_) {
+        if (config_.enable_open_loop_phase_orbit && open_loop_phase_active_) {
+            const TrackerConfig tracker_cfg = tracker_.get_config();
+            const float orbit_radius_mm = std::max(1.0f, tracker_cfg.target_orbit_radius_mm);
+            const float board_distance_mm = std::max(
+                1.0f,
+                (last_board_distance_mm_ > 0.0f)
+                    ? last_board_distance_mm_
+                    : ((open_loop_distance_mm_ > 0.0f)
+                           ? open_loop_distance_mm_
+                           : std::max(1.0f, config_.open_loop_default_distance_mm)));
+
+            const float prev_pitch = pitch_angle_;
+            const float prev_yaw = yaw_angle_;
+
+            open_loop_phase_rad_ += config_.open_loop_omega_rad_s * dt;
+            const float x_mm = orbit_radius_mm * std::cos(open_loop_phase_rad_);
+            const float y_mm = orbit_radius_mm * std::sin(open_loop_phase_rad_);
+            const float yaw_offset_rad = std::atan2(-x_mm, board_distance_mm);
+            const float pitch_offset_rad = std::atan2(-y_mm, board_distance_mm);
+
+            const auto orbit_angles = compute_servo_angles_from_offsets(
+                open_loop_base_pitch_deg_,
+                open_loop_base_yaw_deg_,
+                yaw_offset_rad,
+                pitch_offset_rad);
+
+            pitch_angle_ = orbit_angles.first;
+            yaw_angle_ = orbit_angles.second;
+            pitch_speed_ = (pitch_angle_ - prev_pitch) / dt;
+            yaw_speed_ = (yaw_angle_ - prev_yaw) / dt;
+
+            output.open_loop_active = true;
+            output.open_loop_phase_rad = open_loop_phase_rad_;
+            output.open_loop_omega_rad_s = config_.open_loop_omega_rad_s;
+            output.open_loop_distance_mm = board_distance_mm;
+            output.view_angle_valid = true;
+            output.view_delta_yaw_rad = yaw_offset_rad;
+            output.view_delta_pitch_rad = pitch_offset_rad;
+            output.feedforward_pitch_angle = pitch_angle_;
+            output.feedforward_yaw_angle = yaw_angle_;
+
+            lost_count_ = 0;
+            reset_pid(pid_pitch_);
+            reset_pid(pid_yaw_);
+        } else if (!control_enabled_) {
             pitch_speed_ = 0.0f;
             yaw_speed_ = 0.0f;
         } else if (has_target) {
