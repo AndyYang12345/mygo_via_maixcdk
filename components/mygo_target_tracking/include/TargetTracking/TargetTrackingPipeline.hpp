@@ -138,7 +138,7 @@ private:
     /// 将数值限制在区间 [lo, hi] 内。
     float clamp_value(float v, float lo, float hi) const;
     /// 计算单步PID输出速度命令。
-        float pid_step(float error, float dt, PID& pid, float integral_limit, bool allow_integral = true);
+    float pid_step(float error, float dt, PID& pid, float integral_limit);
     /// 清空PID积分与历史误差。
     void reset_pid(PID& pid);
     /// 把配置中的PID参数写入俯仰/偏航控制器。

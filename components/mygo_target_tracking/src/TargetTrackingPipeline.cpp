@@ -113,7 +113,6 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     TargetInfo info = tracker_.process_frame(frame);
     const bool has_target = info.found;
     const bool has_laser = info.laser_found;
-    const bool tracking_abort_requested = info.tracking_abort_requested;
 
     cv::Point2f target_pos(-1.0f, -1.0f);
     if (has_target) {
@@ -188,33 +187,14 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         } else {
             lost_count_++;
             if (lost_count_ >= config_.lost_required) {
-                state_ = TrackState::Waiting;
+                state_ = TrackState::Searching;
                 lost_count_ = 0;
                 lock_count_ = 0;
                 scan_time_ = 0.0f;
-                pitch_angle_ = config_.pitch_home;
-                yaw_angle_ = config_.yaw_home;
-                pitch_speed_ = 0.0f;
-                yaw_speed_ = 0.0f;
-                reset_pid(pid_pitch_);
-                reset_pid(pid_yaw_);
-                tracker_.reset_roi_tracking();
             }
         }
     } else if (state_ == TrackState::Tracking) {
-        if (tracking_abort_requested) {
-            state_ = TrackState::Waiting;
-            lost_count_ = 0;
-            lock_count_ = 0;
-            scan_time_ = 0.0f;
-            pitch_angle_ = config_.pitch_home;
-            yaw_angle_ = config_.yaw_home;
-            pitch_speed_ = 0.0f;
-            yaw_speed_ = 0.0f;
-            reset_pid(pid_pitch_);
-            reset_pid(pid_yaw_);
-            tracker_.reset_roi_tracking();
-        } else if (!control_enabled_) {
+        if (!control_enabled_) {
             pitch_speed_ = 0.0f;
             yaw_speed_ = 0.0f;
         } else if (has_target) {
@@ -260,15 +240,10 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             yaw_speed_ = 0.0f;
             lost_count_++;
             if (lost_count_ >= config_.lost_required) {
-                state_ = TrackState::Waiting;
+                state_ = TrackState::Searching;
                 lost_count_ = 0;
                 lock_count_ = 0;
                 scan_time_ = 0.0f;
-                pitch_angle_ = config_.pitch_home;
-                yaw_angle_ = config_.yaw_home;
-                reset_pid(pid_pitch_);
-                reset_pid(pid_yaw_);
-                tracker_.reset_roi_tracking();
             }
         }
     }
@@ -326,7 +301,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         std::ostringstream mode_line;
         switch (state_) {
             case TrackState::Waiting:
-                mode_line << "Waiting | home position";
+                mode_line << "Waiting | press SPACE to start scanning";
                 break;
             case TrackState::Searching:
                 mode_line << "Searching | lock:" << lock_count_ << "/" << config_.lock_required;
@@ -401,11 +376,9 @@ float TargetTrackingPipeline::clamp_value(float v, float lo, float hi) const {
     return std::max(lo, std::min(v, hi));
 }
 
-float TargetTrackingPipeline::pid_step(float error, float dt, PID& pid, float integral_limit, bool allow_integral) {
-    if (allow_integral) {
-        pid.integral += error * dt;
-        pid.integral = clamp_value(pid.integral, -integral_limit, integral_limit);
-    }
+float TargetTrackingPipeline::pid_step(float error, float dt, PID& pid, float integral_limit) {
+    pid.integral += error * dt;
+    pid.integral = clamp_value(pid.integral, -integral_limit, integral_limit);
 
     float derivative = 0.0f;
     if (pid.has_prev && dt > 1e-6f) {

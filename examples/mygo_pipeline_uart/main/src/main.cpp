@@ -70,11 +70,8 @@ struct VisionStatusSnapshot {
     bool can_scan{false};
     bool target_found{false};
     bool laser_found{false};
-    int lost_count{0};
     int target_x{-1};
     int target_y{-1};
-    uint64_t frame_index{0};
-    uint64_t run_ms{0};
     std::string command;
 };
 
@@ -230,7 +227,6 @@ void draw_pipeline_overlay(
     const PipelineOutput &out,
     VisionAppState app_state,
     bool task_active,
-    bool tracking_enabled,
     bool tcp_listening,
     bool tcp_client_connected,
     int tcp_port)
@@ -323,17 +319,10 @@ void draw_pipeline_overlay(
         banner_color = warn_color;
         banner_bg = dark_warn_bg;
     } else if (task_active && out.state == TrackState::Tracking) {
-        if (out.target_found) {
-            banner_text = "TRACKING TARGET";
-            banner_sub = "Servo command is being generated.";
-            banner_color = ok_color;
-            banner_bg = dark_good_bg;
-        } else {
-            banner_text = "TRACK LOST HOLD";
-            banner_sub = "Prediction hold active, fallback to safe wait soon.";
-            banner_color = warn_color;
-            banner_bg = dark_warn_bg;
-        }
+        banner_text = "TRACKING TARGET";
+        banner_sub = out.target_found ? "Servo command is being generated." : "Tracking active.";
+        banner_color = ok_color;
+        banner_bg = dark_good_bg;
     } else if (task_active && out.state == TrackState::Locked) {
         banner_text = "LOCKED READY";
         banner_sub = "Locked target, preparing stable tracking.";
@@ -352,7 +341,6 @@ void draw_pipeline_overlay(
     }
 
     if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
-        const std::string target_label = out.roi_active ? "target(roi)" : "target(full)";
         img.draw_rect(static_cast<int>(out.target_pos.x) - 3,
                       static_cast<int>(out.target_pos.y) - 3,
                       7,
@@ -361,7 +349,7 @@ void draw_pipeline_overlay(
                       2);
         img.draw_string(static_cast<int>(out.target_pos.x) + 6,
                         static_cast<int>(out.target_pos.y) - 10,
-                        target_label,
+                        "target",
                         target_color,
                         1.2f);
     }
@@ -463,7 +451,7 @@ void draw_pipeline_overlay(
                    task_active ? (!out.command.empty() ? ok_color : warn_color) : warn_color);
     img.draw_string(right_x + 14,
                     info_preview_y,
-                    std::string("ROI: ") + preview_text(out.roi_active ? "active" : "idle", 28),
+                    std::string("FRAME: ") + preview_text(out.command, 28),
                     panel_text,
                     0.82f,
                     2);
@@ -719,9 +707,6 @@ private:
         append_cstr(body, snapshot.can_scan ? "1" : "0");
         append_cstr(body, std::to_string(snapshot.target_x));
         append_cstr(body, std::to_string(snapshot.target_y));
-        append_cstr(body, std::to_string(snapshot.lost_count));
-        append_cstr(body, std::to_string(snapshot.frame_index));
-        append_cstr(body, std::to_string(snapshot.run_ms));
         return body;
     }
 
@@ -776,17 +761,12 @@ private:
                 control.recognition_start_requested = true;
                 control.stop_requested = false;
                 return encode_resp_ok(frame.cmd, {});
-            case APP_CMD_VISION_START: {
+            case APP_CMD_VISION_START:
                 if (!matches_current_app(frame.body)) {
                     return encode_resp_err(frame.cmd, 1, "app_id not match");
                 }
                 control.recognition_start_requested = true;
-                // Respect host intent: tracking=0 means refresh recognition only.
-                bool tracking_requested = true;
-                if (frame.body.size() >= 6 && frame.body[0] == 0xFE) {
-                    tracking_requested = (frame.body[5] != 0U);
-                }
-                control.tracking_start_requested = tracking_requested;
+                control.tracking_start_requested = true;
                 control.stop_requested = false;
                 if (frame.body.size() >= 5 && frame.body[0] == 0xFE) {
                     const int yaw_pwm = static_cast<int>(read_u16_le(frame.body.data() + 1));
@@ -795,11 +775,7 @@ private:
                     control.init_pitch_pwm = std::clamp(pitch_pwm, 500, 2500);
                     control.tracking_init_pose_valid = true;
                 }
-                if (frame.body.size() >= 6 && frame.body[0] == 0xFE) {
-                    control.tracking_start_requested = (frame.body[5] != 0U);
-                }
                 return encode_resp_ok(frame.cmd, {});
-            }
             case CMD_EXIT_APP:
             case APP_CMD_VISION_STOP:
                 if (!matches_current_app(frame.body)) {
@@ -979,12 +955,9 @@ int _main(int argc, char *argv[])
     log::info("background stream standby: http://%s:%d/stream", stream.host().c_str(), stream.port());
     uint64_t last_stream_ms = time::ticks_ms();
     uint64_t last_cmd_log_flush_ms = last_stream_ms;
-    bool last_target_found = false;
-    bool last_recognition_active = false;
 
     while (!app::need_exit()) {
         PendingControl control;
-        const uint64_t now_tick_ms_snapshot = time::ticks_ms();
         VisionStatusSnapshot snapshot;
         snapshot.app_state = app_state;
         snapshot.tracking_state = recognition_active ? state_to_text(last_output.state) : "Stopped";
@@ -993,7 +966,6 @@ int _main(int argc, char *argv[])
         snapshot.can_scan = recognition_active && !tracking_enabled;
         snapshot.target_found = recognition_active ? last_output.target_found : false;
         snapshot.laser_found = recognition_active ? last_output.laser_found : false;
-        snapshot.lost_count = recognition_active ? last_output.lost_count : 0;
         snapshot.target_x = (recognition_active && last_output.target_found)
                     ? static_cast<int>(std::lround(last_output.target_pos.x))
                     : -1;
@@ -1001,8 +973,6 @@ int _main(int argc, char *argv[])
                     ? static_cast<int>(std::lround(last_output.target_pos.y))
                     : -1;
         snapshot.command = tracking_enabled ? last_output.command : "";
-        snapshot.frame_index = frame_index;
-        snapshot.run_ms = now_tick_ms_snapshot - run_start_ms;
         tcp_server.poll(snapshot, control);
 
         if (control.stop_requested) {
@@ -1099,7 +1069,6 @@ int _main(int argc, char *argv[])
                 pipeline.start_tracking();
                 log::info("[AUTO] Locked -> Tracking");
             }
-
             last_state = out.state;
         } else {
             out.state = TrackState::Waiting;
@@ -1107,30 +1076,6 @@ int _main(int argc, char *argv[])
         }
 
         last_output = out;
-
-        if (recognition_active) {
-            if (!last_recognition_active) {
-                last_target_found = out.target_found;
-            } else if (out.target_found != last_target_found) {
-                if (out.target_found) {
-                    log::info("[VISION] TARGET_FOUND frame=%llu pos=(%.1f,%.1f) state=%s",
-                              static_cast<unsigned long long>(frame_index),
-                              out.target_pos.x,
-                              out.target_pos.y,
-                              state_to_text(out.state));
-                } else {
-                    log::info("[VISION] TARGET_LOST frame=%llu state=%s lost_count=%d",
-                              static_cast<unsigned long long>(frame_index),
-                              state_to_text(out.state),
-                              out.lost_count);
-                }
-                last_target_found = out.target_found;
-            }
-
-        } else {
-            last_target_found = false;
-        }
-        last_recognition_active = recognition_active;
 
         if (cmd_log.is_open()) {
             std::string command_clean = out.command;
@@ -1157,7 +1102,6 @@ int _main(int argc, char *argv[])
                               out,
                               app_state,
                               recognition_active,
-                              tracking_enabled,
                               tcp_server.is_listening(),
                               tcp_server.is_client_connected(),
                               tcp_port);
