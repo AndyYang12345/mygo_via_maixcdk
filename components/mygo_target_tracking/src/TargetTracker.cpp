@@ -47,6 +47,7 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     result.roi_active = false;
     result.roi_rect = cv::Rect(-1, -1, 0, 0);
     result.board_distance_mm = estimated_board_distance_mm_;
+    result.view_angle_valid = false;
     frames_processed_++;
     
     // 更新帧大小
@@ -143,6 +144,17 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
         result.distance = norm(delta);
         result.angle = atan2(delta.y, delta.x) * 180.0f / CV_PI;
         result.board_distance_mm = estimated_board_distance_mm_;
+
+        if (result.board_distance_mm > 0.0f) {
+            const auto angle_arrays = compute_view_angle_offsets(
+                result.board_center,
+                result.target_center,
+                result.board_distance_mm,
+                std::max(1.0f, config_.target_orbit_radius_mm));
+            result.view_delta_x = angle_arrays.first;
+            result.view_delta_y = angle_arrays.second;
+            result.view_angle_valid = true;
+        }
     
         // 更新统计信息
         successful_tracks_++;
@@ -210,8 +222,44 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     }
 
     result.board_distance_mm = estimated_board_distance_mm_;
+
+    if (result.found && !result.view_angle_valid && result.board_distance_mm > 0.0f) {
+        const auto angle_arrays = compute_view_angle_offsets(
+            result.board_center,
+            result.target_center,
+            result.board_distance_mm,
+            std::max(1.0f, config_.target_orbit_radius_mm));
+        result.view_delta_x = angle_arrays.first;
+        result.view_delta_y = angle_arrays.second;
+        result.view_angle_valid = true;
+    }
     
     return result;
+}
+
+TargetTracker::OrderedAngleArrays TargetTracker::compute_view_angle_offsets(
+    const cv::Point2f& board_center_px,
+    const cv::Point2f& target_center_px,
+    float board_distance_mm,
+    float target_orbit_radius_mm) const {
+    OrderedAngleArrays out{{0.0f}, {0.0f}};
+    if (board_distance_mm <= 1.0f || target_orbit_radius_mm <= 0.0f) {
+        return out;
+    }
+
+    const cv::Point2f delta_px = target_center_px - board_center_px;
+    const float phase_rad = std::atan2(delta_px.y, delta_px.x);
+
+    // 使用物理半径构造靶面局部位移，正yaw表示目标在左侧，正pitch表示目标在上侧。
+    const float x_mm = target_orbit_radius_mm * std::cos(phase_rad);
+    const float y_mm = target_orbit_radius_mm * std::sin(phase_rad);
+
+    const float yaw_rad = std::atan2(-x_mm, board_distance_mm);
+    const float pitch_rad = std::atan2(-y_mm, board_distance_mm);
+
+    out.first[0] = yaw_rad;
+    out.second[0] = pitch_rad;
+    return out;
 }
 
 float TargetTracker::estimate_board_distance_mm_from_blobs(const std::vector<ColorBlob>& blobs) const {

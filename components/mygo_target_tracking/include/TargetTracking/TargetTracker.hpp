@@ -2,6 +2,7 @@
 #define TARGET_TRACKER_HPP
 
 #include <opencv2/opencv.hpp>
+#include <array>
 #include <vector>
 #include <string>
 
@@ -74,6 +75,9 @@ struct TrackerConfig {
     float camera_fx_px = 381.625f;
     float camera_fy_px = 381.625f;
     bool enable_board_distance_estimation = true;
+
+    // 目标色块绕中心色块的物理半径（mm）
+    float target_orbit_radius_mm = 160.0f;
 };
 
 // 色块信息结构体
@@ -100,11 +104,16 @@ struct TargetInfo {
     cv::Point2f laser_center{-1.0f, -1.0f}; // 激光红点中心
     float laser_to_target_distance = 0.0f;  // 激光到目标的像素距离
     float board_distance_mm = -1.0f;  // 靶面到相机估计距离（mm）
+    bool view_angle_valid = false;     // 是否有可用的角度偏移
+    std::array<float, 1> view_delta_x{{0.0f}}; // X方向相对中心变化（yaw, rad）
+    std::array<float, 1> view_delta_y{{0.0f}}; // Y方向相对中心变化（pitch, rad）
 };
 
 // 主跟踪器类
 class TargetTracker {
 public:
+    using OrderedAngleArrays = std::pair<std::array<float, 1>, std::array<float, 1>>;
+
     /// 构造跟踪器并初始化默认配置与状态。
     TargetTracker();
     
@@ -119,6 +128,13 @@ public:
     // 主处理函数
     /// 处理单帧图像并输出目标与激光检测结果。
     TargetInfo process_frame(const cv::Mat& frame);
+
+    /// 基于目标距离与物理半径，计算相机相对中心应偏转的视角（rad）。
+    /// 返回值为一对有序数组：first->x(yaw), second->y(pitch)。
+    OrderedAngleArrays compute_view_angle_offsets(const cv::Point2f& board_center_px,
+                                                  const cv::Point2f& target_center_px,
+                                                  float board_distance_mm,
+                                                  float target_orbit_radius_mm) const;
 
     // ROI 跟踪控制
     /// 清空ROI与历史跟踪状态，回到全图检测起点。
