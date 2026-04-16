@@ -40,9 +40,9 @@ struct TrackerConfig {
     bool print_debug_info = false;
 
     // ROI 跟踪参数
-    int roi_padding = 80;
-    int roi_max_padding = 180;
-    float roi_velocity_padding_gain = 1.2f;
+    int roi_padding = 60;
+    int roi_max_padding = 130;
+    float roi_velocity_padding_gain = 0.8f;
     int roi_min_blob_area = 200;
     int roi_max_blob_area = 8000;
     int roi_hue_threshold = 12;   // 0-180

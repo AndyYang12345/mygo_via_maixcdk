@@ -66,6 +66,7 @@ struct PipelineOutput {
     TrackState state = TrackState::Waiting;
     int lock_count = 0;
     int lost_count = 0;
+    bool tracking_recovery_requested = false;
     bool target_found = false;
     cv::Point2f target_pos{-1.0f, -1.0f};
     bool roi_active = false;

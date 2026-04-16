@@ -775,6 +775,9 @@ private:
                     control.init_pitch_pwm = std::clamp(pitch_pwm, 500, 2500);
                     control.tracking_init_pose_valid = true;
                 }
+                if (frame.body.size() >= 6 && frame.body[0] == 0xFE) {
+                    control.tracking_start_requested = (frame.body[5] != 0U);
+                }
                 return encode_resp_ok(frame.cmd, {});
             case CMD_EXIT_APP:
             case APP_CMD_VISION_STOP:
@@ -1023,7 +1026,7 @@ int _main(int argc, char *argv[])
             log::info("vision tracking enabled by tcp command");
         } else if (control.recognition_start_requested) {
             pipeline.reset();
-            pipeline.set_control_enabled(false);
+            pipeline.set_control_enabled(true);
             pipeline.handle_key(' ');
             recognition_active = true;
             tracking_enabled = false;
@@ -1076,6 +1079,12 @@ int _main(int argc, char *argv[])
         }
 
         last_output = out;
+
+        if (out.tracking_recovery_requested) {
+            tracking_enabled = false;
+            pipeline.set_control_enabled(true);
+            log::info("tracking lost -> reset to recognition/home, wait for next A");
+        }
 
         if (cmd_log.is_open()) {
             std::string command_clean = out.command;

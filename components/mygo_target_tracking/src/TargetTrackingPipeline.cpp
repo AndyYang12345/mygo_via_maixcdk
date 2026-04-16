@@ -187,10 +187,8 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         } else {
             lost_count_++;
             if (lost_count_ >= config_.lost_required) {
-                state_ = TrackState::Searching;
-                lost_count_ = 0;
-                lock_count_ = 0;
-                scan_time_ = 0.0f;
+                output.tracking_recovery_requested = true;
+                reset();
             }
         }
     } else if (state_ == TrackState::Tracking) {
@@ -240,10 +238,8 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             yaw_speed_ = 0.0f;
             lost_count_++;
             if (lost_count_ >= config_.lost_required) {
-                state_ = TrackState::Searching;
-                lost_count_ = 0;
-                lock_count_ = 0;
-                scan_time_ = 0.0f;
+                output.tracking_recovery_requested = true;
+                reset();
             }
         }
     }
