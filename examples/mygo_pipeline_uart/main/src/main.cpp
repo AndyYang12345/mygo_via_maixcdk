@@ -1082,6 +1082,15 @@ int _main(int argc, char *argv[])
             pipeline.set_control_enabled(recognition_active);
             out = pipeline.process_frame(frame, dt);
 
+            if (!tracking_enabled && out.target_found && out.board_distance_mm > 0.0f) {
+                log::info("global recognition distance estimate: %.1f mm (target=(%.1f, %.1f), board=(%.1f, %.1f))",
+                          out.board_distance_mm,
+                          out.target_pos.x,
+                          out.target_pos.y,
+                          out.board_pos.x,
+                          out.board_pos.y);
+            }
+
             if (out.state != last_state) {
                 log::info("[STATE] %s -> %s",
                           state_to_text(last_state),

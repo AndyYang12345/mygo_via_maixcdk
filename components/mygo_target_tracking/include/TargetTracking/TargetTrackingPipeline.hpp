@@ -69,6 +69,7 @@ struct PipelineOutput {
     bool tracking_recovery_requested = false;
     bool target_found = false;
     cv::Point2f target_pos{-1.0f, -1.0f};
+    cv::Point2f board_pos{-1.0f, -1.0f};
     bool roi_active = false;
     cv::Rect roi_rect{-1, -1, 0, 0};
     bool laser_found = false;
@@ -76,6 +77,7 @@ struct PipelineOutput {
     cv::Point2f aim_pos{-1.0f, -1.0f};
     bool aim_from_laser = false;
     float laser_target_error_px = 0.0f;
+    float board_distance_mm = -1.0f;
     float pitch_angle = 0.0f;
     float yaw_angle = 0.0f;
     float pitch_speed = 0.0f;

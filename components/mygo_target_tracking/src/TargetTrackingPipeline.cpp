@@ -267,11 +267,13 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.yaw_speed = yaw_speed_;
     output.target_found = has_target;
     output.target_pos = target_pos;
+    output.board_pos = info.board_center;
     output.roi_active = info.roi_active;
     output.roi_rect = info.roi_rect;
     output.laser_found = has_laser;
     output.laser_pos = laser_pos;
     output.laser_target_error_px = (has_target && has_laser) ? cv::norm(target_pos - laser_pos) : 0.0f;
+    output.board_distance_mm = info.board_distance_mm;
 
     if (config_.draw_overlay) {
         output.canvas = frame.clone();
