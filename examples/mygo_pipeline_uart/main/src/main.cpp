@@ -1090,22 +1090,6 @@ int _main(int argc, char *argv[])
             pipeline.set_control_enabled(recognition_active);
             out = pipeline.process_frame(frame, dt);
 
-            if (!tracking_enabled && out.target_found && out.board_distance_mm > 0.0f) {
-                log::info("global recognition distance estimate: %.1f mm (target=(%.1f, %.1f), board=(%.1f, %.1f))",
-                          out.board_distance_mm,
-                          out.target_pos.x,
-                          out.target_pos.y,
-                          out.board_pos.x,
-                          out.board_pos.y);
-                if (out.view_angle_valid) {
-                    log::info("feedforward servo angles: pitch=%.2f deg yaw=%.2f deg (d_pitch=%.4f rad, d_yaw=%.4f rad)",
-                              out.feedforward_pitch_angle,
-                              out.feedforward_yaw_angle,
-                              out.view_delta_pitch_rad,
-                              out.view_delta_yaw_rad);
-                }
-            }
-
             if (out.state != last_state) {
                 log::info("[STATE] %s -> %s",
                           state_to_text(last_state),
@@ -1118,12 +1102,9 @@ int _main(int argc, char *argv[])
             }
 
             if (tracking_enabled && out.open_loop_active) {
-                log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f",
-                          out.open_loop_phase_rad,
-                          out.open_loop_omega_rad_s,
-                          out.open_loop_distance_mm,
-                          out.pitch_angle,
-                          out.yaw_angle);
+                log::info("open-loop: omega=%.4f rad/s phase=%.3f rad",
+                          out.measured_target_omega_rad_s,
+                          out.open_loop_phase_rad);
             }
             last_state = out.state;
         } else {

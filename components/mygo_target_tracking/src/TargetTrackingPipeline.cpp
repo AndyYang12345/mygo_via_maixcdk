@@ -63,6 +63,12 @@ void TargetTrackingPipeline::start_tracking() {
         open_loop_distance_mm_ = (last_board_distance_mm_ > 0.0f)
                                      ? last_board_distance_mm_
                                      : std::max(1.0f, config_.open_loop_default_distance_mm);
+        speed_measure_elapsed_s_ = 0.0f;
+        speed_measure_samples_ = 0;
+        open_loop_speed_locked_ = !config_.enable_target_rpm_measurement;
+        locked_open_loop_omega_rad_s_ = config_.open_loop_omega_rad_s;
+        measured_omega_rad_s_ = 0.0f;
+        has_valid_last_phase_ = false;
     } else {
         open_loop_phase_active_ = false;
     }
@@ -93,6 +99,13 @@ void TargetTrackingPipeline::reset() {
     open_loop_base_yaw_deg_ = config_.yaw_home;
     open_loop_distance_mm_ = -1.0f;
     last_board_distance_mm_ = -1.0f;
+    last_target_phase_rad_ = 0.0f;
+    measured_omega_rad_s_ = 0.0f;
+    has_valid_last_phase_ = false;
+    speed_measure_elapsed_s_ = 0.0f;
+    speed_measure_samples_ = 0;
+    open_loop_speed_locked_ = false;
+    locked_open_loop_omega_rad_s_ = 0.0f;
 }
 
 void TargetTrackingPipeline::handle_key(int key) {
@@ -170,9 +183,65 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.open_loop_phase_rad = open_loop_phase_rad_;
     output.open_loop_omega_rad_s = config_.open_loop_omega_rad_s;
     output.open_loop_distance_mm = open_loop_distance_mm_;
+    output.open_loop_speed_locked = open_loop_speed_locked_;
 
     if (info.board_distance_mm > 0.0f) {
         last_board_distance_mm_ = info.board_distance_mm;
+    }
+
+    // Measure target rotation speed from frame-to-frame phase change
+    output.measured_target_omega_rad_s = measured_omega_rad_s_;
+    output.recognized_target_phase_rad = 0.0f;
+    if (has_target) {
+        const cv::Point2f delta_px = info.target_center - info.board_center;
+        const float current_phase_rad = std::atan2(delta_px.y, delta_px.x);
+        output.recognized_target_phase_rad = current_phase_rad;
+
+        const bool should_measure_speed =
+            config_.enable_target_rpm_measurement &&
+            open_loop_phase_active_ &&
+            state_ == TrackState::Tracking &&
+            !open_loop_speed_locked_;
+
+        if (should_measure_speed) {
+            speed_measure_elapsed_s_ += dt;
+            if (has_valid_last_phase_ && dt > 1e-6f) {
+                float phase_diff = current_phase_rad - last_target_phase_rad_;
+                while (phase_diff > static_cast<float>(CV_PI)) {
+                    phase_diff -= 2.0f * static_cast<float>(CV_PI);
+                }
+                while (phase_diff < -static_cast<float>(CV_PI)) {
+                    phase_diff += 2.0f * static_cast<float>(CV_PI);
+                }
+
+                float measured_omega = phase_diff / dt;
+                const float max_abs_omega = std::max(0.5f, config_.open_loop_speed_max_abs_rad_s);
+                measured_omega = clamp_value(measured_omega, -max_abs_omega, max_abs_omega);
+
+                const float alpha = std::max(0.01f, std::min(0.5f, config_.target_rpm_lowpass_alpha));
+                measured_omega_rad_s_ = alpha * measured_omega + (1.0f - alpha) * measured_omega_rad_s_;
+                output.measured_target_omega_rad_s = measured_omega_rad_s_;
+                speed_measure_samples_++;
+            }
+
+            const bool measure_time_ready =
+                speed_measure_elapsed_s_ >= std::max(0.1f, config_.open_loop_speed_measure_time_s);
+            const bool enough_samples =
+                speed_measure_samples_ >= std::max(1, config_.open_loop_speed_measure_min_samples);
+            if (measure_time_ready && enough_samples) {
+                const float fallback_omega = config_.open_loop_omega_rad_s;
+                locked_open_loop_omega_rad_s_ =
+                    (std::abs(measured_omega_rad_s_) > 1e-3f) ? measured_omega_rad_s_ : fallback_omega;
+                open_loop_speed_locked_ = true;
+                output.open_loop_speed_locked = true;
+                output.open_loop_omega_rad_s = locked_open_loop_omega_rad_s_;
+            }
+        }
+
+        last_target_phase_rad_ = current_phase_rad;
+        has_valid_last_phase_ = true;
+    } else {
+        has_valid_last_phase_ = false;
     }
 
     if (info.view_angle_valid) {
@@ -283,7 +352,19 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             const float prev_pitch = pitch_angle_;
             const float prev_yaw = yaw_angle_;
 
-            open_loop_phase_rad_ += config_.open_loop_omega_rad_s * dt;
+            if (!open_loop_speed_locked_) {
+                // Measure-only stage: keep current pose, wait until speed is locked.
+                pitch_speed_ = 0.0f;
+                yaw_speed_ = 0.0f;
+                pitch_angle_ = open_loop_base_pitch_deg_;
+                yaw_angle_ = open_loop_base_yaw_deg_;
+                output.open_loop_active = true;
+                output.open_loop_omega_rad_s = measured_omega_rad_s_;
+                output.open_loop_distance_mm = board_distance_mm;
+                output.open_loop_phase_rad = output.recognized_target_phase_rad;
+            } else {
+                const float effective_omega_rad_s = locked_open_loop_omega_rad_s_;
+                open_loop_phase_rad_ += effective_omega_rad_s * dt;
             const float x_mm = orbit_radius_mm * std::cos(open_loop_phase_rad_);
             const float y_mm = orbit_radius_mm * std::sin(open_loop_phase_rad_);
             const float yaw_offset_rad = std::atan2(-x_mm, board_distance_mm);
@@ -302,13 +383,15 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
 
             output.open_loop_active = true;
             output.open_loop_phase_rad = open_loop_phase_rad_;
-            output.open_loop_omega_rad_s = config_.open_loop_omega_rad_s;
+            output.open_loop_omega_rad_s = effective_omega_rad_s;  // show the omega actually used
             output.open_loop_distance_mm = board_distance_mm;
             output.view_angle_valid = true;
             output.view_delta_yaw_rad = yaw_offset_rad;
             output.view_delta_pitch_rad = pitch_offset_rad;
             output.feedforward_pitch_angle = pitch_angle_;
             output.feedforward_yaw_angle = yaw_angle_;
+            output.open_loop_speed_locked = true;
+            }
 
             lost_count_ = 0;
             reset_pid(pid_pitch_);
