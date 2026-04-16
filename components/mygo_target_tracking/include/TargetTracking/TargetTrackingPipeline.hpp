@@ -63,6 +63,16 @@ struct PipelineConfig {
     float open_loop_phase_init_rad = 0.0f;
     float open_loop_default_distance_mm = 800.0f;  // fallback when no valid estimate
 
+    // Step-3: phase correction (PLL-like) in Tracking open-loop.
+    bool enable_phase_correction = true;
+    float phase_corr_kp = 0.10f;
+    float phase_corr_ki = 0.04f;
+    float phase_corr_max_step_rad = 0.03f;
+    float phase_corr_integral_limit = 1.5f;
+    float phase_corr_omega_bias_limit_rad_s = 0.60f;
+    float phase_corr_innovation_gate_rad = 0.45f;
+    int phase_corr_outlier_freeze_frames = 2;
+
     // ROI-based speed identification in Searching state.
     bool enable_speed_identification = false;
     float speed_id_warmup_s = 0.30f;
@@ -106,6 +116,12 @@ struct PipelineOutput {
     float open_loop_phase_rad = 0.0f;
     float open_loop_omega_rad_s = 0.0f;
     float open_loop_distance_mm = -1.0f;
+    bool phase_correction_active = false;
+    float phase_error_rad = 0.0f;
+    float phase_correction_step_rad = 0.0f;
+    float phase_correction_omega_bias_rad_s = 0.0f;
+    bool phase_correction_skipped = false;
+    int phase_correction_outlier_count = 0;
     bool predicted_pos_valid = false;
     cv::Point2f predicted_pos{-1.0f, -1.0f};
     bool speed_identifying = false;
@@ -214,6 +230,10 @@ private:
     float open_loop_distance_mm_ = -1.0f;
     float open_loop_locked_omega_rad_s_ = 0.0f;
     bool open_loop_locked_from_fit_ = false;
+    float phase_corr_integral_ = 0.0f;
+    float phase_corr_omega_bias_rad_s_ = 0.0f;
+    int phase_corr_outlier_count_ = 0;
+    int phase_corr_freeze_left_ = 0;
     float last_board_distance_mm_ = -1.0f;
 
     bool speed_id_active_ = false;

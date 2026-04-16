@@ -1195,12 +1195,17 @@ int _main(int argc, char *argv[])
 
             if (tracking_enabled && out.open_loop_active) {
                 if ((now_tick_ms - last_open_loop_log_ms) >= kInfoLogIntervalMs) {
-                    log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f",
+                    log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f phase_err=%.4f step=%.4f wbias=%.4f skip=%d outliers=%d",
                               out.open_loop_phase_rad,
                               out.open_loop_omega_rad_s,
                               out.open_loop_distance_mm,
                               out.pitch_angle,
-                              out.yaw_angle);
+                              out.yaw_angle,
+                              out.phase_error_rad,
+                              out.phase_correction_step_rad,
+                              out.phase_correction_omega_bias_rad_s,
+                              out.phase_correction_skipped ? 1 : 0,
+                              out.phase_correction_outlier_count);
                     last_open_loop_log_ms = now_tick_ms;
                 }
             }
