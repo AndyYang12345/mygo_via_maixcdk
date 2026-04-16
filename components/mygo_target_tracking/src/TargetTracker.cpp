@@ -54,16 +54,21 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     }
 
     bool target_ready = false;
+    bool roi_fallback_attempted = false;
     if (roi_tracking_active_) {
         if (update_roi_tracking(frame, result)) {
             target_ready = result.found;
         } else {
             // ROI tracking失败则回退到完整靶面识别
+            roi_fallback_attempted = true;
             roi_tracking_active_ = false;
         }
     }
 
     if (!target_ready) {
+        if (result.tracking_abort_requested) {
+            return result;
+        }
     
         // Step 1: 提取所有色块（不进行颜色匹配过滤！）
         Mat debug_mask;
@@ -108,6 +113,22 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
                 cout << "No matching target blob found!" << endl;
             }
             return result;
+        }
+
+        if (roi_fallback_attempted && has_previous_target_) {
+            const float color_sim = static_cast<float>(calculate_color_similarity(
+                target_color_bgr_,
+                target_blob->mean_color_bgr,
+                false));
+            if (color_sim < config_.roi_min_color_similarity) {
+                result.tracking_abort_requested = true;
+                result.found = false;
+                if (config_.print_debug_info) {
+                    cout << "[ROI->GLOBAL] color mismatch, abort tracking. sim="
+                         << color_sim << " threshold=" << config_.roi_min_color_similarity << endl;
+                }
+                return result;
+            }
         }
     
         // Step 4: 计算结果
@@ -195,6 +216,7 @@ void TargetTracker::reset_roi_tracking() {
     roi_tracking_active_ = false;
     has_previous_target_ = false;
     has_startup_target_position_ = false;
+    last_target_blob_area_ = 0.0f;
     kalman_initialized_ = false;
     has_previous_laser_ = false;
     last_target_position_ = cv::Point2f(-1.0f, -1.0f);
@@ -312,6 +334,7 @@ bool TargetTracker::init_roi_tracking(const cv::Mat& frame, const ColorBlob& tar
         startup_target_position_ = target_blob.center;
         has_startup_target_position_ = true;
     }
+    last_target_blob_area_ = static_cast<float>(std::max(1.0, target_blob.area));
     has_previous_target_ = true;
     roi_tracking_active_ = true;
 
@@ -348,7 +371,13 @@ bool TargetTracker::update_roi_tracking(const cv::Mat& frame, TargetInfo& result
     }
 
     const float predict_speed = cv::norm(predict_point - last_target_position_);
-    const float adaptive_padding_f = static_cast<float>(config_.roi_padding) +
+    const float area_padding = std::sqrt(std::max(1.0f, last_target_blob_area_)) *
+                               std::max(0.1f, config_.roi_area_padding_gain);
+    const float base_padding = std::clamp(
+        area_padding,
+        static_cast<float>(std::max(24, config_.roi_padding / 2)),
+        static_cast<float>(config_.roi_padding));
+    const float adaptive_padding_f = base_padding +
                                      config_.roi_velocity_padding_gain * predict_speed;
     const int adaptive_padding = std::clamp(
         static_cast<int>(std::lround(adaptive_padding_f)),
@@ -369,12 +398,29 @@ bool TargetTracker::update_roi_tracking(const cv::Mat& frame, TargetInfo& result
     }
 
     cv::Point2f detected_center;
+    float detected_blob_area = 0.0f;
+    cv::Scalar detected_blob_color_bgr;
     bool rejected_by_circular_shape = false;
-    bool detected = detect_target_in_roi(frame, roi, predict_point, detected_center, rejected_by_circular_shape);
+    bool rejected_by_color_mismatch = false;
+    bool detected = detect_target_in_roi(
+        frame,
+        roi,
+        predict_point,
+        detected_center,
+        detected_blob_area,
+        detected_blob_color_bgr,
+        rejected_by_circular_shape,
+        rejected_by_color_mismatch);
 
-    if (rejected_by_circular_shape) {
+    if (rejected_by_circular_shape || rejected_by_color_mismatch) {
+        result.tracking_abort_requested = true;
         if (config_.print_debug_info) {
-            cout << "[ROI] circular center-like blob detected, fallback to startup position and relock" << endl;
+            if (rejected_by_circular_shape) {
+                cout << "[ROI] circular center-like blob detected, request tracking abort" << endl;
+            }
+            if (rejected_by_color_mismatch) {
+                cout << "[ROI] color mismatch in ROI candidate, request tracking abort" << endl;
+            }
         }
         if (has_startup_target_position_) {
             last_target_position_ = startup_target_position_;
@@ -387,7 +433,19 @@ bool TargetTracker::update_roi_tracking(const cv::Mat& frame, TargetInfo& result
     }
 
     if (detected) {
+        const float jump = cv::norm(detected_center - last_target_position_);
+        if (jump > config_.roi_max_position_jump_px && jump > 1e-4f) {
+            const float ratio = config_.roi_max_position_jump_px / jump;
+            detected_center = last_target_position_ + (detected_center - last_target_position_) * ratio;
+            if (config_.print_debug_info) {
+                cout << "[ROI] jump limited from " << jump
+                     << " to " << config_.roi_max_position_jump_px << " px" << endl;
+            }
+        }
         last_target_position_ = detected_center;
+        target_color_bgr_ = detected_blob_color_bgr;
+        target_color_hsv_ = bgr_to_hsv(target_color_bgr_);
+        last_target_blob_area_ = std::max(1.0f, detected_blob_area);
         if (config_.use_kalman && kalman_initialized_) {
             cv::Mat measurement = (cv::Mat_<float>(2, 1) << detected_center.x, detected_center.y);
             kalman_.correct(measurement);
@@ -414,8 +472,12 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame,
                                          const cv::Rect& roi,
                                          const cv::Point2f& expected_center_global,
                                          cv::Point2f& out_center,
-                                         bool& rejected_by_circular_shape) {
+                                         float& out_blob_area,
+                                         cv::Scalar& out_blob_color_bgr,
+                                         bool& rejected_by_circular_shape,
+                                         bool& rejected_by_color_mismatch) {
     rejected_by_circular_shape = false;
+    rejected_by_color_mismatch = false;
     cv::Mat roi_bgr = frame(roi);
     cv::Mat roi_hsv;
     cv::cvtColor(roi_bgr, roi_hsv, cv::COLOR_BGR2HSV);
@@ -451,6 +513,9 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame,
 
     float best_score = -std::numeric_limits<float>::max();
     cv::Point2f best_center(-1.0f, -1.0f);
+    float best_area = 0.0f;
+    cv::Scalar best_color_bgr;
+    float best_color_similarity = 0.0f;
     bool best_candidate_is_center_like_circle = false;
 
     for (const auto& contour : contours) {
@@ -502,6 +567,9 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame,
         if (score > best_score) {
             best_score = score;
             best_center = center_local;
+            best_area = static_cast<float>(area);
+            best_color_bgr = mean_bgr;
+            best_color_similarity = color_similarity;
             best_candidate_is_center_like_circle = center_like_circle;
         }
     }
@@ -515,7 +583,14 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame,
         return false;
     }
 
+    if (best_color_similarity < config_.roi_min_color_similarity) {
+        rejected_by_color_mismatch = true;
+        return false;
+    }
+
     out_center = cv::Point2f(best_center.x + roi.x, best_center.y + roi.y);
+    out_blob_area = best_area;
+    out_blob_color_bgr = best_color_bgr;
     return true;
 }
 

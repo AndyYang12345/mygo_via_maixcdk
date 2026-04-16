@@ -761,12 +761,17 @@ private:
                 control.recognition_start_requested = true;
                 control.stop_requested = false;
                 return encode_resp_ok(frame.cmd, {});
-            case APP_CMD_VISION_START:
+            case APP_CMD_VISION_START: {
                 if (!matches_current_app(frame.body)) {
                     return encode_resp_err(frame.cmd, 1, "app_id not match");
                 }
                 control.recognition_start_requested = true;
-                control.tracking_start_requested = true;
+                // Respect host intent: tracking=0 means refresh recognition only.
+                bool tracking_requested = true;
+                if (frame.body.size() >= 6 && frame.body[0] == 0xFE) {
+                    tracking_requested = (frame.body[5] != 0U);
+                }
+                control.tracking_start_requested = tracking_requested;
                 control.stop_requested = false;
                 if (frame.body.size() >= 5 && frame.body[0] == 0xFE) {
                     const int yaw_pwm = static_cast<int>(read_u16_le(frame.body.data() + 1));
@@ -776,6 +781,7 @@ private:
                     control.tracking_init_pose_valid = true;
                 }
                 return encode_resp_ok(frame.cmd, {});
+            }
             case CMD_EXIT_APP:
             case APP_CMD_VISION_STOP:
                 if (!matches_current_app(frame.body)) {

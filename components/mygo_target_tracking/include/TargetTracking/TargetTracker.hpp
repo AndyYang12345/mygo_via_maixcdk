@@ -40,9 +40,9 @@ struct TrackerConfig {
     bool print_debug_info = false;
 
     // ROI 跟踪参数
-    int roi_padding = 80;
-    int roi_max_padding = 180;
-    float roi_velocity_padding_gain = 1.2f;
+    int roi_padding = 56;
+    int roi_max_padding = 120;
+    float roi_velocity_padding_gain = 0.9f;
     int roi_min_blob_area = 200;
     int roi_max_blob_area = 8000;
     int roi_hue_threshold = 12;   // 0-180
@@ -53,6 +53,9 @@ struct TrackerConfig {
     float roi_area_score_weight = 0.4f;
     float roi_circularity_reject_threshold = 0.82f;
     float roi_center_reject_radius = 45.0f;
+    float roi_min_color_similarity = 0.45f;
+    float roi_max_position_jump_px = 42.0f;
+    float roi_area_padding_gain = 1.8f;
     bool use_kalman = true;
     float kalman_dt = 1.0f / 30.0f;
 
@@ -93,6 +96,7 @@ struct TargetInfo {
     bool laser_found = false;         // 是否找到激光红点
     cv::Point2f laser_center{-1.0f, -1.0f}; // 激光红点中心
     float laser_to_target_distance = 0.0f;  // 激光到目标的像素距离
+    bool tracking_abort_requested = false;   // ROI异常时请求退出追踪
 };
 
 // 主跟踪器类
@@ -167,6 +171,7 @@ private:
     cv::Point2f last_target_position_;
     cv::Point2f startup_target_position_;
     bool has_startup_target_position_ = false;
+    float last_target_blob_area_ = 0.0f;
     cv::Point2f last_board_position_;
     bool has_previous_laser_ = false;
     cv::Point2f last_laser_position_{-1.0f, -1.0f};
@@ -197,7 +202,10 @@ private:
                               const cv::Rect& roi,
                               const cv::Point2f& expected_center_global,
                               cv::Point2f& out_center,
-                              bool& rejected_by_circular_shape);
+                              float& out_blob_area,
+                              cv::Scalar& out_blob_color_bgr,
+                              bool& rejected_by_circular_shape,
+                              bool& rejected_by_color_mismatch);
     /// 在目标附近检测激光红点位置。
     bool detect_laser_dot(const cv::Mat& frame,
                           const cv::Point2f& target_hint,

@@ -113,6 +113,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     TargetInfo info = tracker_.process_frame(frame);
     const bool has_target = info.found;
     const bool has_laser = info.laser_found;
+    const bool tracking_abort_requested = info.tracking_abort_requested;
 
     cv::Point2f target_pos(-1.0f, -1.0f);
     if (has_target) {
@@ -201,7 +202,19 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             }
         }
     } else if (state_ == TrackState::Tracking) {
-        if (!control_enabled_) {
+        if (tracking_abort_requested) {
+            state_ = TrackState::Waiting;
+            lost_count_ = 0;
+            lock_count_ = 0;
+            scan_time_ = 0.0f;
+            pitch_angle_ = config_.pitch_home;
+            yaw_angle_ = config_.yaw_home;
+            pitch_speed_ = 0.0f;
+            yaw_speed_ = 0.0f;
+            reset_pid(pid_pitch_);
+            reset_pid(pid_yaw_);
+            tracker_.reset_roi_tracking();
+        } else if (!control_enabled_) {
             pitch_speed_ = 0.0f;
             yaw_speed_ = 0.0f;
         } else if (has_target) {
