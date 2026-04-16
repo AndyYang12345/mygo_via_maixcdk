@@ -93,6 +93,23 @@ void TargetTrackingPipeline::handle_key(int key) {
     }
 }
 
+std::pair<float, float> TargetTrackingPipeline::compute_servo_angles_from_offsets(
+    float current_pitch_deg,
+    float current_yaw_deg,
+    float yaw_offset_rad,
+    float pitch_offset_rad) const {
+    const float rad_to_deg = 180.0f / static_cast<float>(CV_PI);
+    const float next_yaw_deg = clamp_value(
+        current_yaw_deg + yaw_offset_rad * rad_to_deg,
+        0.0f,
+        270.0f);
+    const float next_pitch_deg = clamp_value(
+        current_pitch_deg + pitch_offset_rad * rad_to_deg,
+        0.0f,
+        270.0f);
+    return {next_pitch_deg, next_yaw_deg};
+}
+
 PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float dt) {
     PipelineOutput output;
     output.state = state_;
@@ -126,6 +143,23 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     }
     output.aim_pos = cv::Point2f(cx, cy);
     output.aim_from_laser = false;
+    output.view_angle_valid = info.view_angle_valid;
+    output.view_delta_yaw_rad = 0.0f;
+    output.view_delta_pitch_rad = 0.0f;
+    output.feedforward_pitch_angle = pitch_angle_;
+    output.feedforward_yaw_angle = yaw_angle_;
+
+    if (info.view_angle_valid) {
+        output.view_delta_yaw_rad = info.view_delta_x[0];
+        output.view_delta_pitch_rad = info.view_delta_y[0];
+        const auto feedforward_angles = compute_servo_angles_from_offsets(
+            pitch_angle_,
+            yaw_angle_,
+            output.view_delta_yaw_rad,
+            output.view_delta_pitch_rad);
+        output.feedforward_pitch_angle = feedforward_angles.first;
+        output.feedforward_yaw_angle = feedforward_angles.second;
+    }
 
     if (state_ == TrackState::Waiting) {
         pitch_angle_ = config_.pitch_home;
@@ -133,6 +167,22 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         pitch_speed_ = 0.0f;
         yaw_speed_ = 0.0f;
     } else if (state_ == TrackState::Searching) {
+        if (config_.enable_view_angle_feedforward && has_target && info.view_angle_valid) {
+            pitch_angle_ = output.feedforward_pitch_angle;
+            yaw_angle_ = output.feedforward_yaw_angle;
+            pitch_speed_ = 0.0f;
+            yaw_speed_ = 0.0f;
+
+            if (config_.print_debug) {
+                std::cout << std::fixed << std::setprecision(2)
+                          << "[FF] board_distance_mm:" << output.board_distance_mm
+                          << " yaw_offset_rad:" << output.view_delta_yaw_rad
+                          << " pitch_offset_rad:" << output.view_delta_pitch_rad
+                          << " next_pitch_deg:" << output.feedforward_pitch_angle
+                          << " next_yaw_deg:" << output.feedforward_yaw_angle
+                          << std::endl;
+            }
+        } else {
         scan_time_ += dt;
         // Yaw 三角扫描（边界自适应）：避免 home±amp 超出机械范围后被夹平。
         const float yaw_freq = std::max(1e-3f, config_.scan_yaw_freq);
@@ -178,6 +228,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             state_ = TrackState::Locked;
             lock_count_ = 0;
             lost_count_ = 0;
+        }
         }
     } else if (state_ == TrackState::Locked) {
         pitch_speed_ = 0.0f;

@@ -3,6 +3,7 @@
 
 #include <opencv2/opencv.hpp>
 #include <string>
+#include <utility>
 
 #include "TargetTracking/GimbalControl.hpp"
 #include "TargetTracking/TargetTracker.hpp"
@@ -53,6 +54,7 @@ struct PipelineConfig {
     bool draw_overlay = true;
     bool print_debug = false;
     bool control_enabled = true;
+    bool enable_view_angle_feedforward = false;
 
     // Serial
     bool enable_serial = false;
@@ -78,6 +80,11 @@ struct PipelineOutput {
     bool aim_from_laser = false;
     float laser_target_error_px = 0.0f;
     float board_distance_mm = -1.0f;
+    bool view_angle_valid = false;
+    float view_delta_yaw_rad = 0.0f;
+    float view_delta_pitch_rad = 0.0f;
+    float feedforward_pitch_angle = 0.0f;
+    float feedforward_yaw_angle = 0.0f;
     float pitch_angle = 0.0f;
     float yaw_angle = 0.0f;
     float pitch_speed = 0.0f;
@@ -113,6 +120,12 @@ public:
 
     /// 处理单帧输入并输出控制命令与可视化结果。
     PipelineOutput process_frame(const cv::Mat& frame, float dt);
+
+    /// 将当前舵机角度与视角偏移合成新的舵机角度（deg）。
+    std::pair<float, float> compute_servo_angles_from_offsets(float current_pitch_deg,
+                                                              float current_yaw_deg,
+                                                              float yaw_offset_rad,
+                                                              float pitch_offset_rad) const;
 
     /// 读取当前俯仰角状态。
     float get_pitch_angle() const;

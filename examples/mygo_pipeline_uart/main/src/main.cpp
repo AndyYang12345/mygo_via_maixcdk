@@ -924,6 +924,7 @@ int _main(int argc, char *argv[])
     cfg.enable_serial = false;
     cfg.draw_overlay = false;
     cfg.print_debug = false;
+    cfg.enable_view_angle_feedforward = true;
     pipeline.set_config(cfg);
     log::info("aim center compensation: laser_offset_up=%.2fmm, distance=%.2fmm, px_per_mm=%.4f, cy_shift=%.2fpx, cy=%.2f",
               laser_offset_up_mm,
@@ -938,6 +939,7 @@ int _main(int argc, char *argv[])
     tracker_cfg.camera_fx_px = cfg.fx;
     tracker_cfg.camera_fy_px = cfg.fy;
     tracker_cfg.enable_board_distance_estimation = true;
+    tracker_cfg.board_distance_calibration_scale = 1.6f;
     pipeline.set_tracker_config(tracker_cfg);
 
     VisionControlTcpServer tcp_server(tcp_port);
@@ -1089,6 +1091,13 @@ int _main(int argc, char *argv[])
                           out.target_pos.y,
                           out.board_pos.x,
                           out.board_pos.y);
+                if (out.view_angle_valid) {
+                    log::info("feedforward servo angles: pitch=%.2f deg yaw=%.2f deg (d_pitch=%.4f rad, d_yaw=%.4f rad)",
+                              out.feedforward_pitch_angle,
+                              out.feedforward_yaw_angle,
+                              out.view_delta_pitch_rad,
+                              out.view_delta_yaw_rad);
+                }
             }
 
             if (out.state != last_state) {

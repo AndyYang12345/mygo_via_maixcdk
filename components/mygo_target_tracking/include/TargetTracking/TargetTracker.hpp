@@ -75,6 +75,9 @@ struct TrackerConfig {
     float camera_fx_px = 381.625f;
     float camera_fy_px = 381.625f;
     bool enable_board_distance_estimation = true;
+    // 经验标定系数：用于修正面积法带来的系统性偏差。
+    // 例如实际 800mm 测得 500mm，可先设置为 1.6。
+    float board_distance_calibration_scale = 1.0f;
 
     // 目标色块绕中心色块的物理半径（mm）
     float target_orbit_radius_mm = 160.0f;

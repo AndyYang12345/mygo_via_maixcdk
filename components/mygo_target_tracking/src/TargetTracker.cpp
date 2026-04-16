@@ -282,7 +282,8 @@ float TargetTracker::estimate_board_distance_mm_from_blobs(const std::vector<Col
 
         const bool circle_like = blob.circularity >= kCircleLikeThreshold;
         const float real_area_mm2 = circle_like ? kCircleAreaMm2 : kSquareAreaMm2;
-        const float distance_mm = std::sqrt((fxy * real_area_mm2) / area_px);
+        const float distance_mm = std::sqrt((fxy * real_area_mm2) / area_px) *
+                      std::max(0.01f, config_.board_distance_calibration_scale);
         if (std::isfinite(distance_mm) &&
             distance_mm >= kMinValidDistanceMm &&
             distance_mm <= kMaxValidDistanceMm) {
