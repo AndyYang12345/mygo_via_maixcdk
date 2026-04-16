@@ -9,6 +9,16 @@
 using namespace cv;
 using namespace std;
 
+namespace {
+constexpr float kSquareSideMm = 80.0f;
+constexpr float kCircleDiameterMm = 80.0f;
+constexpr float kSquareAreaMm2 = kSquareSideMm * kSquareSideMm;
+constexpr float kCircleAreaMm2 = static_cast<float>(CV_PI) * (kCircleDiameterMm * 0.5f) * (kCircleDiameterMm * 0.5f);
+constexpr float kCircleLikeThreshold = 0.78f;
+constexpr float kMinValidDistanceMm = 100.0f;
+constexpr float kMaxValidDistanceMm = 10000.0f;
+}
+
 // ============ 构造函数和配置管理 ============
 
 TargetTracker::TargetTracker() 
@@ -36,6 +46,7 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     result.laser_found = false;
     result.roi_active = false;
     result.roi_rect = cv::Rect(-1, -1, 0, 0);
+    result.board_distance_mm = estimated_board_distance_mm_;
     frames_processed_++;
     
     // 更新帧大小
@@ -71,6 +82,17 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     
         if (config_.print_debug_info) {
             cout << "Found " << blobs.size() << " color blobs" << endl;
+        }
+
+        if (config_.enable_board_distance_estimation) {
+            const float estimated = estimate_board_distance_mm_from_blobs(blobs);
+            if (estimated > 0.0f) {
+                estimated_board_distance_mm_ = estimated;
+                result.board_distance_mm = estimated_board_distance_mm_;
+                if (config_.print_debug_info) {
+                    cout << "Estimated board distance: " << estimated_board_distance_mm_ << " mm" << endl;
+                }
+            }
         }
     
         if (blobs.size() < 6) {  // 至少需要6个色块（1个中心 + 5个周围）
@@ -120,6 +142,7 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
         Point2f delta = target_blob->center - center_blob->center;
         result.distance = norm(delta);
         result.angle = atan2(delta.y, delta.x) * 180.0f / CV_PI;
+        result.board_distance_mm = estimated_board_distance_mm_;
     
         // 更新统计信息
         successful_tracks_++;
@@ -185,8 +208,50 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
                  << last_laser_position_.x << ", " << last_laser_position_.y << ")" << endl;
         }
     }
+
+    result.board_distance_mm = estimated_board_distance_mm_;
     
     return result;
+}
+
+float TargetTracker::estimate_board_distance_mm_from_blobs(const std::vector<ColorBlob>& blobs) const {
+    if (blobs.empty()) {
+        return -1.0f;
+    }
+
+    const float fx = std::max(1.0f, config_.camera_fx_px);
+    const float fy = std::max(1.0f, config_.camera_fy_px);
+    const float fxy = fx * fy;
+
+    std::vector<float> distance_candidates_mm;
+    distance_candidates_mm.reserve(blobs.size());
+
+    for (const auto& blob : blobs) {
+        const float area_px = static_cast<float>(blob.area);
+        if (area_px <= 1.0f) {
+            continue;
+        }
+
+        const bool circle_like = blob.circularity >= kCircleLikeThreshold;
+        const float real_area_mm2 = circle_like ? kCircleAreaMm2 : kSquareAreaMm2;
+        const float distance_mm = std::sqrt((fxy * real_area_mm2) / area_px);
+        if (std::isfinite(distance_mm) &&
+            distance_mm >= kMinValidDistanceMm &&
+            distance_mm <= kMaxValidDistanceMm) {
+            distance_candidates_mm.push_back(distance_mm);
+        }
+    }
+
+    if (distance_candidates_mm.empty()) {
+        return -1.0f;
+    }
+
+    std::sort(distance_candidates_mm.begin(), distance_candidates_mm.end());
+    const size_t n = distance_candidates_mm.size();
+    if ((n % 2U) == 1U) {
+        return distance_candidates_mm[n / 2U];
+    }
+    return 0.5f * (distance_candidates_mm[n / 2U - 1U] + distance_candidates_mm[n / 2U]);
 }
 
 // ============ ROI 跟踪 ============

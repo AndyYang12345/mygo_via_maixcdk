@@ -68,6 +68,12 @@ struct TrackerConfig {
     int laser_max_blob_area = 2000;
     int laser_search_radius = 220;
     float laser_circularity_weight = 0.25f;
+
+    // 距离估计参数
+    // 使用像素面积与已知物理面积估计靶面到相机距离。
+    float camera_fx_px = 381.625f;
+    float camera_fy_px = 381.625f;
+    bool enable_board_distance_estimation = true;
 };
 
 // 色块信息结构体
@@ -93,6 +99,7 @@ struct TargetInfo {
     bool laser_found = false;         // 是否找到激光红点
     cv::Point2f laser_center{-1.0f, -1.0f}; // 激光红点中心
     float laser_to_target_distance = 0.0f;  // 激光到目标的像素距离
+    float board_distance_mm = -1.0f;  // 靶面到相机估计距离（mm）
 };
 
 // 主跟踪器类
@@ -176,6 +183,7 @@ private:
     cv::Scalar target_color_hsv_;
     cv::KalmanFilter kalman_;
     bool kalman_initialized_ = false;
+    float estimated_board_distance_mm_ = -1.0f;
     struct ColorSimilarity {
         double bgr_sim;
         double hsv_sim;
@@ -186,6 +194,8 @@ private:
     ColorSimilarity calculate_multi_space_similarity(const cv::Scalar& color1, const cv::Scalar& color2, bool center_is_dark);
     /// 按 HSV 粗分类颜色类型用于动态加权。
     int classify_color_type(const cv::Scalar& hsv);
+    /// 根据色块像素面积与已知物理尺寸估计靶面距离（mm）。
+    float estimate_board_distance_mm_from_blobs(const std::vector<ColorBlob>& blobs) const;
 
     // ROI 跟踪实现
     /// 用当前目标初始化ROI与可选卡尔曼状态。

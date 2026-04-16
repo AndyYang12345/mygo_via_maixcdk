@@ -854,6 +854,8 @@ int _main(int argc, char *argv[])
     std::string cmd_log_path = "servo_command_debug.csv";
     bool invert_pitch = false;
     bool invert_yaw = false;
+    float laser_offset_up_mm = 20.0f;
+    float nominal_target_distance_mm = 800.0f;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -869,6 +871,10 @@ int _main(int argc, char *argv[])
             invert_pitch = true;
         } else if (arg == "--invert-yaw") {
             invert_yaw = true;
+        } else if (arg == "--laser-offset-up-mm" && i + 1 < argc) {
+            laser_offset_up_mm = std::stof(argv[++i]);
+        } else if (arg == "--target-distance-mm" && i + 1 < argc) {
+            nominal_target_distance_mm = std::stof(argv[++i]);
         }
     }
 
@@ -889,7 +895,12 @@ int _main(int argc, char *argv[])
     cfg.fx = 381.625f;
     cfg.fy = 381.625f;
     cfg.cx = static_cast<float>(frame_width) * 0.5f;
-    cfg.cy = static_cast<float>(frame_height) * 0.5f;
+    // Approximate mm->pixel conversion on image Y axis: px_per_mm = fy / Z(mm).
+    // Move optical center upward to make aiming center align with laser hit point.
+    const float px_per_mm_y = cfg.fy / std::max(1.0f, nominal_target_distance_mm);
+    const float laser_offset_up_px = laser_offset_up_mm * px_per_mm_y;
+    cfg.cy = static_cast<float>(frame_height) * 0.5f - laser_offset_up_px;
+    cfg.cy = clamp_value(cfg.cy, 0.0f, static_cast<float>(frame_height - 1));
     // 与 test_gimbal_control 对齐：PWM=1500 对应 135deg（正前方）
     cfg.pitch_home = 135.0f;
     cfg.yaw_home = 135.0f;
@@ -914,10 +925,19 @@ int _main(int argc, char *argv[])
     cfg.draw_overlay = false;
     cfg.print_debug = false;
     pipeline.set_config(cfg);
+    log::info("aim center compensation: laser_offset_up=%.2fmm, distance=%.2fmm, px_per_mm=%.4f, cy_shift=%.2fpx, cy=%.2f",
+              laser_offset_up_mm,
+              nominal_target_distance_mm,
+              px_per_mm_y,
+              laser_offset_up_px,
+              cfg.cy);
 
     TrackerConfig tracker_cfg = pipeline.get_tracker_config();
     tracker_cfg.show_debug_windows = false;
     tracker_cfg.print_debug_info = false;
+    tracker_cfg.camera_fx_px = cfg.fx;
+    tracker_cfg.camera_fy_px = cfg.fy;
+    tracker_cfg.enable_board_distance_estimation = true;
     pipeline.set_tracker_config(tracker_cfg);
 
     VisionControlTcpServer tcp_server(tcp_port);
