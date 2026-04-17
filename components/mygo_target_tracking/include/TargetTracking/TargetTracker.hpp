@@ -80,7 +80,7 @@ struct TrackerConfig {
     float board_distance_calibration_scale = 1.0f;
 
     // 目标色块绕中心色块的物理半径（mm）
-    float target_orbit_radius_mm = 160.0f;
+    float target_orbit_radius_mm = 200.0f;
 };
 
 // 色块信息结构体

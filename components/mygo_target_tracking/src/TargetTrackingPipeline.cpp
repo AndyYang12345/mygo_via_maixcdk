@@ -580,7 +580,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             if (config_.enable_phase_lock && has_target && info.roi_active) {
                 const cv::Point2f meas_delta = info.target_center - info.board_center;
                 const float meas_phase_rad = std::atan2(meas_delta.y, meas_delta.x);
-                const float phase_error = wrap_angle_rad(meas_phase_rad - open_loop_phase_rad_);
+                const float phase_error = wrap_angle_rad(open_loop_phase_rad_ - meas_phase_rad);
                 output.phase_lock_target_phase_rad = wrap_angle_rad(meas_phase_rad);
                 const bool innovation_outlier =
                     std::abs(phase_error) > std::max(0.01f, config_.phase_lock_innovation_gate_rad);
