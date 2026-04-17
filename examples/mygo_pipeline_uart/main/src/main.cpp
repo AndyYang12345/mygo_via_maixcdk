@@ -969,6 +969,15 @@ int _main(int argc, char *argv[])
     cfg.print_debug = false;
     cfg.enable_view_angle_feedforward = true;
     cfg.enable_open_loop_phase_orbit = true;
+    cfg.enable_phase_lock = true;
+    cfg.phase_lock_kp = 0.10f;
+    cfg.phase_lock_ki = 0.03f;
+    cfg.phase_lock_max_step_rad = 0.02f;
+    cfg.phase_lock_integral_limit = 1.2f;
+    cfg.phase_lock_omega_bias_limit_rad_s = 0.35f;
+    cfg.phase_lock_innovation_gate_rad = 0.60f;
+    cfg.phase_lock_outlier_freeze_frames = 2;
+    cfg.phase_lock_min_valid_frames = 3;
     cfg.open_loop_omega_rad_s = 1.806f; // pi/3 rad/s
     cfg.open_loop_phase_init_rad = 0.0f;
     cfg.open_loop_default_distance_mm = nominal_target_distance_mm;
@@ -1246,12 +1255,18 @@ int _main(int argc, char *argv[])
             }
 
             if (tracking_enabled && out.open_loop_active) {
-                log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f",
+                log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f lock_act=%d err=%.4f step=%.4f wbias=%.4f skip=%d outliers=%d",
                           out.open_loop_phase_rad,
                           out.open_loop_omega_rad_s,
                           out.open_loop_distance_mm,
                           out.pitch_angle,
-                          out.yaw_angle);
+                          out.yaw_angle,
+                          out.phase_lock_active ? 1 : 0,
+                          out.phase_lock_error_rad,
+                          out.phase_lock_step_rad,
+                          out.phase_lock_omega_bias_rad_s,
+                          out.phase_lock_skipped ? 1 : 0,
+                          out.phase_lock_outlier_count);
             }
 
             if (tracking_enabled && !out.command.empty()) {

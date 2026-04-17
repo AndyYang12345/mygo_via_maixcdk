@@ -63,6 +63,25 @@ struct PipelineConfig {
     float open_loop_phase_init_rad = 0.0f;
     float open_loop_default_distance_mm = 800.0f;  // fallback when no valid estimate
 
+    // Output-angle smoothing for trajectory generation.
+    // 1) first-order interpolation with speed limit, 2) first-order low-pass.
+    bool enable_angle_interpolation = true;
+    float angle_interp_max_speed_deg_s = 220.0f;
+    bool enable_angle_lowpass = true;
+    float angle_lowpass_tau_s = 0.06f;
+
+    // Closed-loop phase lock on top of open-loop orbit.
+    // Keep omega feedforward as primary driver, and apply small phase correction per frame.
+    bool enable_phase_lock = false;
+    float phase_lock_kp = 0.10f;
+    float phase_lock_ki = 0.03f;
+    float phase_lock_max_step_rad = 0.02f;
+    float phase_lock_integral_limit = 1.2f;
+    float phase_lock_omega_bias_limit_rad_s = 0.35f;
+    float phase_lock_innovation_gate_rad = 0.60f;
+    int phase_lock_outlier_freeze_frames = 2;
+    int phase_lock_min_valid_frames = 3;
+
     // ROI-based speed identification in Searching state.
     bool enable_speed_identification = false;
     float speed_id_warmup_s = 0.30f;
@@ -106,6 +125,12 @@ struct PipelineOutput {
     float open_loop_phase_rad = 0.0f;
     float open_loop_omega_rad_s = 0.0f;
     float open_loop_distance_mm = -1.0f;
+    bool phase_lock_active = false;
+    float phase_lock_error_rad = 0.0f;
+    float phase_lock_step_rad = 0.0f;
+    float phase_lock_omega_bias_rad_s = 0.0f;
+    bool phase_lock_skipped = false;
+    int phase_lock_outlier_count = 0;
     bool predicted_pos_valid = false;
     cv::Point2f predicted_pos{-1.0f, -1.0f};
     bool speed_identifying = false;
@@ -215,6 +240,11 @@ private:
     float open_loop_distance_mm_ = -1.0f;
     float open_loop_locked_omega_rad_s_ = 0.0f;
     bool open_loop_locked_from_fit_ = false;
+    float phase_lock_integral_ = 0.0f;
+    float phase_lock_omega_bias_rad_s_ = 0.0f;
+    int phase_lock_outlier_count_ = 0;
+    int phase_lock_freeze_left_ = 0;
+    int phase_lock_valid_frames_ = 0;
     float last_board_distance_mm_ = -1.0f;
 
     bool speed_id_active_ = false;
