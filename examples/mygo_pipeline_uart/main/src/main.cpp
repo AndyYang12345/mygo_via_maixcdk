@@ -997,7 +997,7 @@ int _main(int argc, char *argv[])
     tracker_cfg.camera_fx_px = cfg.fx;
     tracker_cfg.camera_fy_px = cfg.fy;
     tracker_cfg.enable_board_distance_estimation = true;
-    tracker_cfg.board_distance_calibration_scale = 1.6f;
+    tracker_cfg.board_distance_calibration_scale = 1.4f;
     pipeline.set_tracker_config(tracker_cfg);
 
     VisionControlTcpServer tcp_server(tcp_port);
