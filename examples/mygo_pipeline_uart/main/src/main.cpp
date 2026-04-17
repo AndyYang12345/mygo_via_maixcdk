@@ -246,6 +246,7 @@ void draw_pipeline_overlay(
     const image::Color dark_info_bg = image::Color::from_rgb(10, 38, 76);
     const image::Color hit_color = ok_color;
     const image::Color miss_color = warn_color;
+    const image::Color pred_color = image::Color::from_rgb(255, 96, 255);
 
     const int width = img.width();
     const int height = img.height();
@@ -384,6 +385,23 @@ void draw_pipeline_overlay(
                       static_cast<int>(out.laser_pos.y),
                       detect_hit ? hit_color : miss_color,
                       2);
+    }
+
+    if (out.predicted_pos_valid && out.predicted_pos.x >= 0.0f && out.predicted_pos.y >= 0.0f) {
+        const int px = static_cast<int>(out.predicted_pos.x);
+        const int py = static_cast<int>(out.predicted_pos.y);
+        img.draw_line(px - 7, py - 7, px + 7, py + 7, pred_color, 2);
+        img.draw_line(px - 7, py + 7, px + 7, py - 7, pred_color, 2);
+        img.draw_string(px + 8, py - 10, "pred", pred_color, 1.0f);
+
+        if (out.target_found && out.target_pos.x >= 0.0f && out.target_pos.y >= 0.0f) {
+            img.draw_line(px,
+                          py,
+                          static_cast<int>(out.target_pos.x),
+                          static_cast<int>(out.target_pos.y),
+                          pred_color,
+                          1);
+        }
     }
 
     if (out.aim_pos.x >= 0.0f && out.aim_pos.y >= 0.0f) {
@@ -563,6 +581,24 @@ public:
     bool is_client_connected() const
     {
         return client_fd_ >= 0;
+    }
+
+    void push_status_periodic(const VisionStatusSnapshot &snapshot, uint64_t now_ms, uint64_t interval_ms)
+    {
+        if (client_fd_ < 0) {
+            return;
+        }
+        if (interval_ms == 0) {
+            return;
+        }
+        if ((now_ms - last_status_push_ms_) < interval_ms) {
+            return;
+        }
+
+        auto body = encode_status_body(snapshot);
+        auto frame = encode_resp_ok(APP_CMD_VISION_STATUS, body);
+        send_bytes(frame);
+        last_status_push_ms_ = now_ms;
     }
 
 private:
@@ -802,6 +838,7 @@ private:
         }
 
         size_t offset = 0;
+        const uint64_t start_ms = time::ticks_ms();
         while (offset < data.size()) {
             const ssize_t written = ::send(client_fd_, data.data() + offset, data.size() - offset, 0);
             if (written > 0) {
@@ -810,7 +847,12 @@ private:
             }
 
             if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                time::sleep_ms(1);
+                // Avoid stalling vision loop on a slow peer; drop connection if socket stays blocked.
+                if ((time::ticks_ms() - start_ms) > 3) {
+                    log::warn("vision tcp send timeout, close slow client");
+                    close_client();
+                    return;
+                }
                 continue;
             }
 
@@ -842,6 +884,7 @@ private:
     int listen_fd_{-1};
     int client_fd_{-1};
     std::vector<uint8_t> rx_buffer_;
+    uint64_t last_status_push_ms_{0};
 };
 
 } // namespace
@@ -926,10 +969,10 @@ int _main(int argc, char *argv[])
     cfg.print_debug = false;
     cfg.enable_view_angle_feedforward = true;
     cfg.enable_open_loop_phase_orbit = true;
-    cfg.open_loop_omega_rad_s = 1.806f; // fixed open-loop speed for hardware troubleshooting
+    cfg.open_loop_omega_rad_s = 1.806f; // pi/3 rad/s
     cfg.open_loop_phase_init_rad = 0.0f;
     cfg.open_loop_default_distance_mm = nominal_target_distance_mm;
-    cfg.enable_target_rpm_measurement = false;
+    cfg.enable_speed_identification = true;
     pipeline.set_config(cfg);
     log::info("aim center compensation: laser_offset_up=%.2fmm, distance=%.2fmm, px_per_mm=%.4f, cy_shift=%.2fpx, cy=%.2f",
               laser_offset_up_mm,
@@ -979,12 +1022,17 @@ int _main(int argc, char *argv[])
     constexpr int kStreamPort = 8000;
     constexpr uint64_t kStreamIntervalMs = 300;
     constexpr uint64_t kCmdLogFlushIntervalMs = 500;
+    constexpr uint64_t kInfoLogIntervalMs = 500;
+    constexpr uint64_t kStatusPushIntervalMs = 30;
     http::JpegStreamer stream("", kStreamPort);
     stream.set_html(kStreamHtml);
     bool stream_active = false;
     log::info("background stream standby: http://%s:%d/stream", stream.host().c_str(), stream.port());
     uint64_t last_stream_ms = time::ticks_ms();
     uint64_t last_cmd_log_flush_ms = last_stream_ms;
+    uint64_t last_distance_log_ms = 0;
+    uint64_t last_speed_validate_log_ms = 0;
+    uint64_t last_open_loop_log_ms = 0;
 
     while (!app::need_exit()) {
         PendingControl control;
@@ -1031,28 +1079,40 @@ int _main(int argc, char *argv[])
                 recognition_active = true;
                 last_state = TrackState::Waiting;
             }
-            tracking_enabled = true;
-            pipeline.set_control_enabled(true);
-            if (control.tracking_init_pose_valid) {
-                const float yaw_deg = pwm_to_angle_deg(control.init_yaw_pwm, cfg.yaw_pwm_zero_angle);
-                const float pitch_deg = pwm_to_angle_deg(control.init_pitch_pwm, cfg.pitch_pwm_zero_angle);
-                pipeline.set_current_angles(pitch_deg, yaw_deg);
-                log::info("tracking init pose from host pwm: yaw=%d(%.2fdeg) pitch=%d(%.2fdeg)",
-                          control.init_yaw_pwm,
-                          yaw_deg,
-                          control.init_pitch_pwm,
-                          pitch_deg);
+            if (!tracking_enabled) {
+                if (last_output.state == TrackState::Locked && last_output.speed_identified) {
+                    tracking_enabled = true;
+                    pipeline.set_control_enabled(true);
+                    if (control.tracking_init_pose_valid) {
+                        const float yaw_deg = pwm_to_angle_deg(control.init_yaw_pwm, cfg.yaw_pwm_zero_angle);
+                        const float pitch_deg = pwm_to_angle_deg(control.init_pitch_pwm, cfg.pitch_pwm_zero_angle);
+                        pipeline.set_current_angles(pitch_deg, yaw_deg);
+                        log::info("tracking init pose from host pwm: yaw=%d(%.2fdeg) pitch=%d(%.2fdeg)",
+                                  control.init_yaw_pwm,
+                                  yaw_deg,
+                                  control.init_pitch_pwm,
+                                  pitch_deg);
+                    }
+                    pipeline.start_tracking();
+                    app_state = VisionAppState::Running;
+                    if (stream_active) {
+                        stream.stop();
+                        stream_active = false;
+                        log::info("background stream stopped (tracking start)");
+                    }
+                    log::info("vision tracking enabled by tcp command (open_loop=%d, omega=%.4f rad/s)",
+                              cfg.enable_open_loop_phase_orbit ? 1 : 0,
+                              cfg.open_loop_omega_rad_s);
+                } else {
+                    pipeline.set_control_enabled(true);
+                    log::info("tracking start requested but speed-id is not ready, wait for LOCKED then press A");
+                }
+            } else {
+                pipeline.set_control_enabled(true);
+                if (control.tracking_init_pose_valid) {
+                    log::info("ignore duplicate tracking-start init pose while tracking is active");
+                }
             }
-            pipeline.start_tracking();
-            app_state = VisionAppState::Running;
-            if (stream_active) {
-                stream.stop();
-                stream_active = false;
-                log::info("background stream stopped (tracking start)");
-            }
-            log::info("vision tracking enabled by tcp command (open_loop=%d, omega=%.4f rad/s)",
-                      cfg.enable_open_loop_phase_orbit ? 1 : 0,
-                      cfg.open_loop_omega_rad_s);
         } else if (control.recognition_start_requested) {
             pipeline.reset();
             pipeline.set_control_enabled(true);
@@ -1091,6 +1151,43 @@ int _main(int argc, char *argv[])
             pipeline.set_control_enabled(recognition_active);
             out = pipeline.process_frame(frame, dt);
 
+            if (!tracking_enabled && out.target_found && out.board_distance_mm > 0.0f) {
+                if ((now_tick_ms - last_distance_log_ms) >= kInfoLogIntervalMs) {
+                    log::info("global recognition distance estimate: %.1f mm (target=(%.1f, %.1f), board=(%.1f, %.1f))",
+                              out.board_distance_mm,
+                              out.target_pos.x,
+                              out.target_pos.y,
+                              out.board_pos.x,
+                              out.board_pos.y);
+                    if (out.view_angle_valid) {
+                        log::info("feedforward servo angles: pitch=%.2f deg yaw=%.2f deg (d_pitch=%.4f rad, d_yaw=%.4f rad)",
+                                  out.feedforward_pitch_angle,
+                                  out.feedforward_yaw_angle,
+                                  out.view_delta_pitch_rad,
+                                  out.view_delta_yaw_rad);
+                    }
+                    last_distance_log_ms = now_tick_ms;
+                }
+            }
+
+            if (!tracking_enabled && out.speed_identifying && out.predicted_pos_valid) {
+                if ((now_tick_ms - last_speed_validate_log_ms) >= kInfoLogIntervalMs) {
+                    log::info("speed-id validating: inst=%.4f fit=%.4f rad/s n=%d err=%.2f/%.2f px",
+                              out.instant_omega_rad_s,
+                              out.fitted_omega_rad_s,
+                              out.speed_fit_samples,
+                              out.speed_validation_error_px,
+                              out.speed_validation_tolerance_px);
+                    last_speed_validate_log_ms = now_tick_ms;
+                }
+            }
+
+            if (!tracking_enabled && out.speed_identified_event) {
+                log::info("speed-id success -> LOCKED (omega=%.4f rad/s, phase=%.4f rad), waiting A to start tracking",
+                          out.identified_omega_rad_s,
+                          out.identified_phase_rad);
+            }
+
             if (out.state != last_state) {
                 log::info("[STATE] %s -> %s",
                           state_to_text(last_state),
@@ -1103,11 +1200,20 @@ int _main(int argc, char *argv[])
             }
 
             if (tracking_enabled && out.open_loop_active) {
-                log::info("open-loop: omega_used=%.4f rad/s omega_measured=%.4f rad/s phase=%.3f rad lock=%d",
-                          out.open_loop_omega_rad_s,
-                          out.measured_target_omega_rad_s,
-                          out.open_loop_phase_rad,
-                          out.open_loop_speed_locked ? 1 : 0);
+                if ((now_tick_ms - last_open_loop_log_ms) >= kInfoLogIntervalMs) {
+                    log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f phase_err=%.4f step=%.4f wbias=%.4f skip=%d outliers=%d",
+                              out.open_loop_phase_rad,
+                              out.open_loop_omega_rad_s,
+                              out.open_loop_distance_mm,
+                              out.pitch_angle,
+                              out.yaw_angle,
+                              out.phase_error_rad,
+                              out.phase_correction_step_rad,
+                              out.phase_correction_omega_bias_rad_s,
+                              out.phase_correction_skipped ? 1 : 0,
+                              out.phase_correction_outlier_count);
+                    last_open_loop_log_ms = now_tick_ms;
+                }
             }
             last_state = out.state;
         } else {
@@ -1116,6 +1222,23 @@ int _main(int argc, char *argv[])
         }
 
         last_output = out;
+
+        VisionStatusSnapshot live_snapshot;
+        live_snapshot.app_state = app_state;
+        live_snapshot.tracking_state = recognition_active ? state_to_text(out.state) : "Stopped";
+        live_snapshot.active = recognition_active;
+        live_snapshot.tracking_enabled = tracking_enabled;
+        live_snapshot.can_scan = recognition_active && !tracking_enabled;
+        live_snapshot.target_found = recognition_active ? out.target_found : false;
+        live_snapshot.laser_found = recognition_active ? out.laser_found : false;
+        live_snapshot.target_x = (recognition_active && out.target_found)
+                    ? static_cast<int>(std::lround(out.target_pos.x))
+                    : -1;
+        live_snapshot.target_y = (recognition_active && out.target_found)
+                    ? static_cast<int>(std::lround(out.target_pos.y))
+                    : -1;
+        live_snapshot.command = tracking_enabled ? out.command : "";
+        tcp_server.push_status_periodic(live_snapshot, now_tick_ms, kStatusPushIntervalMs);
 
         if (out.tracking_recovery_requested) {
             tracking_enabled = false;

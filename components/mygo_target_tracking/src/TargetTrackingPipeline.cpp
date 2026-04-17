@@ -6,6 +6,18 @@
 #include <iostream>
 #include <sstream>
 
+namespace {
+float wrap_angle_rad(float angle_rad) {
+    while (angle_rad > static_cast<float>(CV_PI)) {
+        angle_rad -= 2.0f * static_cast<float>(CV_PI);
+    }
+    while (angle_rad < -static_cast<float>(CV_PI)) {
+        angle_rad += 2.0f * static_cast<float>(CV_PI);
+    }
+    return angle_rad;
+}
+}
+
 TargetTrackingPipeline::TargetTrackingPipeline() {
     control_enabled_ = config_.control_enabled;
     gimbal_.set_pitch_zero_angle_deg(config_.pitch_pwm_zero_angle);
@@ -60,15 +72,21 @@ void TargetTrackingPipeline::start_tracking() {
         open_loop_phase_rad_ = config_.open_loop_phase_init_rad;
         open_loop_base_pitch_deg_ = pitch_angle_;
         open_loop_base_yaw_deg_ = yaw_angle_;
-        open_loop_distance_mm_ = (last_board_distance_mm_ > 0.0f)
-                                     ? last_board_distance_mm_
-                                     : std::max(1.0f, config_.open_loop_default_distance_mm);
-        speed_measure_elapsed_s_ = 0.0f;
-        speed_measure_samples_ = 0;
-        open_loop_speed_locked_ = !config_.enable_target_rpm_measurement;
-        locked_open_loop_omega_rad_s_ = config_.open_loop_omega_rad_s;
-        measured_omega_rad_s_ = 0.0f;
-        has_valid_last_phase_ = false;
+        open_loop_distance_mm_ = std::max(1.0f, config_.open_loop_default_distance_mm);
+        open_loop_locked_omega_rad_s_ = config_.open_loop_omega_rad_s;
+        open_loop_locked_from_fit_ = false;
+        phase_corr_integral_ = 0.0f;
+        phase_corr_omega_bias_rad_s_ = 0.0f;
+        phase_corr_outlier_count_ = 0;
+        phase_corr_freeze_left_ = 0;
+
+        if (speed_id_valid_ &&
+            speed_id_omega_count_ >= std::max(1, config_.speed_id_min_samples) &&
+            std::isfinite(speed_id_omega_rad_s_) &&
+            std::abs(speed_id_omega_rad_s_) > 1e-4f) {
+            open_loop_locked_omega_rad_s_ = speed_id_omega_rad_s_;
+            open_loop_locked_from_fit_ = true;
+        }
     } else {
         open_loop_phase_active_ = false;
     }
@@ -98,14 +116,39 @@ void TargetTrackingPipeline::reset() {
     open_loop_base_pitch_deg_ = config_.pitch_home;
     open_loop_base_yaw_deg_ = config_.yaw_home;
     open_loop_distance_mm_ = -1.0f;
+    open_loop_locked_omega_rad_s_ = config_.open_loop_omega_rad_s;
+    open_loop_locked_from_fit_ = false;
+    phase_corr_integral_ = 0.0f;
+    phase_corr_omega_bias_rad_s_ = 0.0f;
+    phase_corr_outlier_count_ = 0;
+    phase_corr_freeze_left_ = 0;
     last_board_distance_mm_ = -1.0f;
-    last_target_phase_rad_ = 0.0f;
-    measured_omega_rad_s_ = 0.0f;
-    has_valid_last_phase_ = false;
-    speed_measure_elapsed_s_ = 0.0f;
-    speed_measure_samples_ = 0;
-    open_loop_speed_locked_ = false;
-    locked_open_loop_omega_rad_s_ = 0.0f;
+    speed_id_active_ = false;
+    speed_id_valid_ = false;
+    speed_id_event_pending_ = false;
+    speed_id_samples_ = 0;
+    speed_id_all_in_roi_ = true;
+    speed_id_warmup_elapsed_s_ = 0.0f;
+    speed_id_validate_elapsed_s_ = 0.0f;
+    speed_id_phase_init_rad_ = 0.0f;
+    speed_id_last_phase_rad_ = 0.0f;
+    speed_id_unwrapped_phase_rad_ = 0.0f;
+    speed_id_unwrapped_phase_start_rad_ = 0.0f;
+    speed_id_omega_rad_s_ = config_.open_loop_omega_rad_s;
+    speed_id_inst_omega_rad_s_ = 0.0f;
+    speed_id_radius_px_ = 0.0f;
+    speed_id_validation_started_ = false;
+    speed_id_has_prev_vec_ = false;
+    speed_id_prev_vec_ = cv::Point2f(0.0f, 0.0f);
+    speed_id_omega_sum_rad_s_ = 0.0f;
+    speed_id_omega_count_ = 0;
+    speed_id_reg_sum_t_ = 0.0f;
+    speed_id_reg_sum_p_ = 0.0f;
+    speed_id_reg_sum_tt_ = 0.0f;
+    speed_id_reg_sum_tp_ = 0.0f;
+    speed_id_last_error_px_ = -1.0f;
+    speed_id_last_tolerance_px_ = -1.0f;
+    speed_id_last_predicted_pos_ = cv::Point2f(-1.0f, -1.0f);
 }
 
 void TargetTrackingPipeline::handle_key(int key) {
@@ -181,67 +224,28 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.feedforward_yaw_angle = yaw_angle_;
     output.open_loop_active = false;
     output.open_loop_phase_rad = open_loop_phase_rad_;
-    output.open_loop_omega_rad_s = config_.open_loop_omega_rad_s;
+    output.open_loop_omega_rad_s = open_loop_locked_omega_rad_s_;
     output.open_loop_distance_mm = open_loop_distance_mm_;
-    output.open_loop_speed_locked = open_loop_speed_locked_;
+    output.phase_correction_active = false;
+    output.phase_error_rad = 0.0f;
+    output.phase_correction_step_rad = 0.0f;
+    output.phase_correction_omega_bias_rad_s = phase_corr_omega_bias_rad_s_;
+    output.phase_correction_skipped = false;
+    output.phase_correction_outlier_count = phase_corr_outlier_count_;
+    output.predicted_pos_valid = false;
+    output.predicted_pos = cv::Point2f(-1.0f, -1.0f);
+    output.speed_identifying = speed_id_active_;
+    output.speed_identified = speed_id_valid_;
+    output.speed_identified_event = false;
+    output.identified_omega_rad_s = speed_id_valid_ ? speed_id_omega_rad_s_ : config_.open_loop_omega_rad_s;
+    output.instant_omega_rad_s = speed_id_inst_omega_rad_s_;
+    output.fitted_omega_rad_s = speed_id_omega_rad_s_;
+    output.speed_fit_samples = speed_id_omega_count_;
+    output.speed_validation_error_px = speed_id_last_error_px_;
+    output.speed_validation_tolerance_px = speed_id_last_tolerance_px_;
 
     if (info.board_distance_mm > 0.0f) {
         last_board_distance_mm_ = info.board_distance_mm;
-    }
-
-    // Measure target rotation speed from frame-to-frame phase change
-    output.measured_target_omega_rad_s = measured_omega_rad_s_;
-    output.recognized_target_phase_rad = 0.0f;
-    if (has_target) {
-        const cv::Point2f delta_px = info.target_center - info.board_center;
-        const float current_phase_rad = std::atan2(delta_px.y, delta_px.x);
-        output.recognized_target_phase_rad = current_phase_rad;
-
-        const bool should_measure_speed =
-            config_.enable_target_rpm_measurement &&
-            open_loop_phase_active_ &&
-            state_ == TrackState::Tracking &&
-            !open_loop_speed_locked_;
-
-        if (should_measure_speed) {
-            speed_measure_elapsed_s_ += dt;
-            if (has_valid_last_phase_ && dt > 1e-6f) {
-                float phase_diff = current_phase_rad - last_target_phase_rad_;
-                while (phase_diff > static_cast<float>(CV_PI)) {
-                    phase_diff -= 2.0f * static_cast<float>(CV_PI);
-                }
-                while (phase_diff < -static_cast<float>(CV_PI)) {
-                    phase_diff += 2.0f * static_cast<float>(CV_PI);
-                }
-
-                float measured_omega = phase_diff / dt;
-                const float max_abs_omega = std::max(0.5f, config_.open_loop_speed_max_abs_rad_s);
-                measured_omega = clamp_value(measured_omega, -max_abs_omega, max_abs_omega);
-
-                const float alpha = std::max(0.01f, std::min(0.5f, config_.target_rpm_lowpass_alpha));
-                measured_omega_rad_s_ = alpha * measured_omega + (1.0f - alpha) * measured_omega_rad_s_;
-                output.measured_target_omega_rad_s = measured_omega_rad_s_;
-                speed_measure_samples_++;
-            }
-
-            const bool measure_time_ready =
-                speed_measure_elapsed_s_ >= std::max(0.1f, config_.open_loop_speed_measure_time_s);
-            const bool enough_samples =
-                speed_measure_samples_ >= std::max(1, config_.open_loop_speed_measure_min_samples);
-            if (measure_time_ready && enough_samples) {
-                const float fallback_omega = config_.open_loop_omega_rad_s;
-                locked_open_loop_omega_rad_s_ =
-                    (std::abs(measured_omega_rad_s_) > 1e-3f) ? measured_omega_rad_s_ : fallback_omega;
-                open_loop_speed_locked_ = true;
-                output.open_loop_speed_locked = true;
-                output.open_loop_omega_rad_s = locked_open_loop_omega_rad_s_;
-            }
-        }
-
-        last_target_phase_rad_ = current_phase_rad;
-        has_valid_last_phase_ = true;
-    } else {
-        has_valid_last_phase_ = false;
     }
 
     if (info.view_angle_valid) {
@@ -262,6 +266,194 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         pitch_speed_ = 0.0f;
         yaw_speed_ = 0.0f;
     } else if (state_ == TrackState::Searching) {
+        if (config_.enable_speed_identification && has_target && info.roi_active) {
+            const cv::Point2f delta = info.target_center - info.board_center;
+            const float phase_rad = std::atan2(delta.y, delta.x);
+            const float radius_px = std::max(1.0f, static_cast<float>(cv::norm(delta)));
+
+            if (!speed_id_active_) {
+                speed_id_active_ = true;
+                speed_id_valid_ = false;
+                speed_id_samples_ = 0;
+                speed_id_all_in_roi_ = true;
+                speed_id_warmup_elapsed_s_ = 0.0f;
+                speed_id_validate_elapsed_s_ = 0.0f;
+                speed_id_phase_init_rad_ = phase_rad;
+                speed_id_last_phase_rad_ = phase_rad;
+                speed_id_unwrapped_phase_rad_ = phase_rad;
+                speed_id_unwrapped_phase_start_rad_ = phase_rad;
+                speed_id_omega_rad_s_ = config_.open_loop_omega_rad_s;
+                speed_id_inst_omega_rad_s_ = 0.0f;
+                speed_id_radius_px_ = radius_px;
+                speed_id_validation_started_ = false;
+                speed_id_has_prev_vec_ = true;
+                speed_id_prev_vec_ = delta;
+                speed_id_omega_sum_rad_s_ = 0.0f;
+                speed_id_omega_count_ = 0;
+                speed_id_reg_sum_t_ = 0.0f;
+                speed_id_reg_sum_p_ = 0.0f;
+                speed_id_reg_sum_tt_ = 0.0f;
+                speed_id_reg_sum_tp_ = 0.0f;
+                speed_id_last_error_px_ = -1.0f;
+                speed_id_last_tolerance_px_ = -1.0f;
+                speed_id_last_predicted_pos_ = info.target_center;
+
+                if (config_.print_debug) {
+                    std::cout << "[SpeedID] start from ROI target" << std::endl;
+                }
+            } else {
+                speed_id_radius_px_ = (1.0f - config_.speed_id_radius_smooth_alpha) * speed_id_radius_px_ +
+                                      config_.speed_id_radius_smooth_alpha * radius_px;
+
+                float inst_omega = 0.0f;
+                bool inst_omega_valid = false;
+                if (speed_id_has_prev_vec_) {
+                    const float cross = speed_id_prev_vec_.x * delta.y - speed_id_prev_vec_.y * delta.x;
+                    const float dot = speed_id_prev_vec_.x * delta.x + speed_id_prev_vec_.y * delta.y;
+                    const float dphase = std::atan2(cross, dot);
+                    speed_id_unwrapped_phase_rad_ += dphase;
+                    inst_omega = dphase / std::max(1e-4f, dt);
+                    inst_omega_valid = std::isfinite(inst_omega);
+                }
+                speed_id_prev_vec_ = delta;
+                speed_id_has_prev_vec_ = true;
+                speed_id_last_phase_rad_ = phase_rad;
+                if (inst_omega_valid) {
+                    speed_id_inst_omega_rad_s_ = inst_omega;
+                }
+
+                speed_id_warmup_elapsed_s_ += dt;
+                if (speed_id_warmup_elapsed_s_ >= config_.speed_id_warmup_s) {
+                    if (!speed_id_validation_started_) {
+                        speed_id_validation_started_ = true;
+                        speed_id_phase_init_rad_ = phase_rad;
+                        speed_id_unwrapped_phase_start_rad_ = speed_id_unwrapped_phase_rad_;
+                        speed_id_validate_elapsed_s_ = 0.0f;
+                        speed_id_samples_ = 0;
+                        speed_id_omega_sum_rad_s_ = 0.0f;
+                        speed_id_omega_count_ = 0;
+                        speed_id_reg_sum_t_ = 0.0f;
+                        speed_id_reg_sum_p_ = 0.0f;
+                        speed_id_reg_sum_tt_ = 0.0f;
+                        speed_id_reg_sum_tp_ = 0.0f;
+                    } else {
+                        speed_id_validate_elapsed_s_ += dt;
+                        speed_id_samples_++;
+
+                        if (inst_omega_valid) {
+                            speed_id_omega_sum_rad_s_ += inst_omega;
+                            speed_id_omega_count_++;
+                        }
+
+                        const float t = speed_id_validate_elapsed_s_;
+                        const float p = speed_id_unwrapped_phase_rad_ - speed_id_unwrapped_phase_start_rad_;
+                        speed_id_reg_sum_t_ += t;
+                        speed_id_reg_sum_p_ += p;
+                        speed_id_reg_sum_tt_ += t * t;
+                        speed_id_reg_sum_tp_ += t * p;
+
+                        if (speed_id_samples_ >= 2) {
+                            const float n = static_cast<float>(speed_id_samples_);
+                            const float denom = n * speed_id_reg_sum_tt_ - speed_id_reg_sum_t_ * speed_id_reg_sum_t_;
+                            if (std::abs(denom) > 1e-6f) {
+                                speed_id_omega_rad_s_ =
+                                    (n * speed_id_reg_sum_tp_ - speed_id_reg_sum_t_ * speed_id_reg_sum_p_) / denom;
+                            } else if (speed_id_omega_count_ > 0) {
+                                speed_id_omega_rad_s_ = speed_id_omega_sum_rad_s_ /
+                                                    static_cast<float>(speed_id_omega_count_);
+                            }
+                        } else if (speed_id_omega_count_ > 0) {
+                            speed_id_omega_rad_s_ = speed_id_omega_sum_rad_s_ /
+                                                    static_cast<float>(speed_id_omega_count_);
+                        }
+
+                        const float predicted_phase = speed_id_phase_init_rad_ +
+                                                      speed_id_omega_rad_s_ * speed_id_validate_elapsed_s_;
+                        const cv::Point2f predicted(
+                            info.board_center.x + speed_id_radius_px_ * std::cos(predicted_phase),
+                            info.board_center.y + speed_id_radius_px_ * std::sin(predicted_phase));
+                        const float error_px = cv::norm(predicted - info.target_center);
+                        const float roi_span = static_cast<float>(std::max(1, std::min(info.roi_rect.width, info.roi_rect.height)));
+                        const float tolerance_px = std::max(config_.speed_id_min_tolerance_px,
+                                                            config_.speed_id_roi_tolerance_ratio * roi_span);
+
+                        speed_id_last_predicted_pos_ = predicted;
+                        speed_id_last_error_px_ = error_px;
+                        speed_id_last_tolerance_px_ = tolerance_px;
+
+                        if (error_px > tolerance_px) {
+                            speed_id_all_in_roi_ = false;
+                        }
+
+                        output.predicted_pos_valid = true;
+                        output.predicted_pos = predicted;
+                        output.speed_validation_error_px = error_px;
+                        output.speed_validation_tolerance_px = tolerance_px;
+                        output.identified_omega_rad_s = speed_id_omega_rad_s_;
+                        output.instant_omega_rad_s = speed_id_inst_omega_rad_s_;
+                        output.fitted_omega_rad_s = speed_id_omega_rad_s_;
+                        output.speed_fit_samples = speed_id_samples_;
+                    }
+                }
+
+                if (speed_id_validate_elapsed_s_ >= config_.speed_id_validate_s) {
+                    if (speed_id_all_in_roi_ && speed_id_samples_ >= config_.speed_id_min_samples) {
+                        speed_id_valid_ = true;
+                        speed_id_event_pending_ = true;
+                        state_ = TrackState::Locked;
+                        lock_count_ = 0;
+                        lost_count_ = 0;
+                        pitch_speed_ = 0.0f;
+                        yaw_speed_ = 0.0f;
+
+                        if (config_.print_debug) {
+                            std::cout << std::fixed << std::setprecision(4)
+                                      << "[SpeedID] success omega=" << speed_id_omega_rad_s_
+                                      << " rad/s" << std::endl;
+                        }
+                    } else {
+                        speed_id_active_ = false;
+                        speed_id_samples_ = 0;
+                        speed_id_warmup_elapsed_s_ = 0.0f;
+                        speed_id_validate_elapsed_s_ = 0.0f;
+                        speed_id_all_in_roi_ = true;
+                        speed_id_validation_started_ = false;
+                        speed_id_has_prev_vec_ = false;
+                        speed_id_prev_vec_ = cv::Point2f(0.0f, 0.0f);
+                        speed_id_omega_sum_rad_s_ = 0.0f;
+                        speed_id_omega_count_ = 0;
+                        speed_id_reg_sum_t_ = 0.0f;
+                        speed_id_reg_sum_p_ = 0.0f;
+                        speed_id_reg_sum_tt_ = 0.0f;
+                        speed_id_reg_sum_tp_ = 0.0f;
+
+                        if (config_.print_debug) {
+                            std::cout << "[SpeedID] retry due to prediction mismatch" << std::endl;
+                        }
+                    }
+                }
+            }
+
+            pitch_speed_ = 0.0f;
+            yaw_speed_ = 0.0f;
+            output.speed_identifying = speed_id_active_;
+            output.speed_identified = speed_id_valid_;
+        } else {
+            speed_id_active_ = false;
+            speed_id_samples_ = 0;
+            speed_id_warmup_elapsed_s_ = 0.0f;
+            speed_id_validate_elapsed_s_ = 0.0f;
+            speed_id_all_in_roi_ = true;
+            speed_id_validation_started_ = false;
+            speed_id_has_prev_vec_ = false;
+            speed_id_prev_vec_ = cv::Point2f(0.0f, 0.0f);
+            speed_id_omega_sum_rad_s_ = 0.0f;
+            speed_id_omega_count_ = 0;
+            speed_id_reg_sum_t_ = 0.0f;
+            speed_id_reg_sum_p_ = 0.0f;
+            speed_id_reg_sum_tt_ = 0.0f;
+            speed_id_reg_sum_tp_ = 0.0f;
+
         if (config_.enable_view_angle_feedforward && has_target && info.view_angle_valid) {
             pitch_angle_ = output.feedforward_pitch_angle;
             yaw_angle_ = output.feedforward_yaw_angle;
@@ -325,9 +517,17 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             lost_count_ = 0;
         }
         }
+        }
     } else if (state_ == TrackState::Locked) {
         pitch_speed_ = 0.0f;
         yaw_speed_ = 0.0f;
+        output.speed_identifying = false;
+        output.speed_identified = speed_id_valid_;
+        output.identified_omega_rad_s = speed_id_valid_ ? speed_id_omega_rad_s_ : open_loop_locked_omega_rad_s_;
+        if (speed_id_last_predicted_pos_.x >= 0.0f && speed_id_last_predicted_pos_.y >= 0.0f) {
+            output.predicted_pos_valid = true;
+            output.predicted_pos = speed_id_last_predicted_pos_;
+        }
         if (has_target) {
             lost_count_ = 0;
         } else {
@@ -341,30 +541,67 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         if (config_.enable_open_loop_phase_orbit && open_loop_phase_active_) {
             const TrackerConfig tracker_cfg = tracker_.get_config();
             const float orbit_radius_mm = std::max(1.0f, tracker_cfg.target_orbit_radius_mm);
+            const float orbit_omega_rad_s = open_loop_locked_omega_rad_s_ + phase_corr_omega_bias_rad_s_;
             const float board_distance_mm = std::max(
                 1.0f,
-                (last_board_distance_mm_ > 0.0f)
-                    ? last_board_distance_mm_
-                    : ((open_loop_distance_mm_ > 0.0f)
-                           ? open_loop_distance_mm_
-                           : std::max(1.0f, config_.open_loop_default_distance_mm)));
+                (open_loop_distance_mm_ > 0.0f)
+                    ? open_loop_distance_mm_
+                    : std::max(1.0f, config_.open_loop_default_distance_mm));
 
             const float prev_pitch = pitch_angle_;
             const float prev_yaw = yaw_angle_;
 
-            if (!open_loop_speed_locked_) {
-                // Measure-only stage: keep current pose, wait until speed is locked.
-                pitch_speed_ = 0.0f;
-                yaw_speed_ = 0.0f;
-                pitch_angle_ = open_loop_base_pitch_deg_;
-                yaw_angle_ = open_loop_base_yaw_deg_;
-                output.open_loop_active = true;
-                output.open_loop_omega_rad_s = measured_omega_rad_s_;
-                output.open_loop_distance_mm = board_distance_mm;
-                output.open_loop_phase_rad = output.recognized_target_phase_rad;
-            } else {
-                const float effective_omega_rad_s = locked_open_loop_omega_rad_s_;
-                open_loop_phase_rad_ += effective_omega_rad_s * dt;
+            open_loop_phase_rad_ += orbit_omega_rad_s * dt;
+
+            if (config_.enable_phase_correction && has_target && info.roi_active) {
+                const cv::Point2f meas_delta = info.target_center - info.board_center;
+                const float meas_phase_rad = std::atan2(meas_delta.y, meas_delta.x);
+                const float phase_error = wrap_angle_rad(meas_phase_rad - open_loop_phase_rad_);
+
+                const bool innovation_outlier =
+                    std::abs(phase_error) > std::max(0.01f, config_.phase_corr_innovation_gate_rad);
+                if (innovation_outlier) {
+                    phase_corr_outlier_count_++;
+                    if (phase_corr_freeze_left_ <= 0) {
+                        phase_corr_freeze_left_ = std::max(0, config_.phase_corr_outlier_freeze_frames);
+                    }
+                } else {
+                    phase_corr_outlier_count_ = 0;
+                }
+
+                float corr_step = 0.0f;
+                bool skipped = false;
+                if (phase_corr_freeze_left_ > 0) {
+                    skipped = true;
+                    phase_corr_freeze_left_--;
+                } else {
+                    phase_corr_integral_ += phase_error * dt;
+                    phase_corr_integral_ = clamp_value(
+                        phase_corr_integral_,
+                        -config_.phase_corr_integral_limit,
+                        config_.phase_corr_integral_limit);
+
+                    phase_corr_omega_bias_rad_s_ += config_.phase_corr_ki * phase_error * dt;
+                    phase_corr_omega_bias_rad_s_ = clamp_value(
+                        phase_corr_omega_bias_rad_s_,
+                        -config_.phase_corr_omega_bias_limit_rad_s,
+                        config_.phase_corr_omega_bias_limit_rad_s);
+
+                    corr_step = clamp_value(
+                        config_.phase_corr_kp * phase_error,
+                        -config_.phase_corr_max_step_rad,
+                        config_.phase_corr_max_step_rad);
+                    open_loop_phase_rad_ += corr_step;
+                }
+
+                output.phase_correction_active = true;
+                output.phase_error_rad = phase_error;
+                output.phase_correction_step_rad = corr_step;
+                output.phase_correction_omega_bias_rad_s = phase_corr_omega_bias_rad_s_;
+                output.phase_correction_skipped = skipped;
+                output.phase_correction_outlier_count = phase_corr_outlier_count_;
+            }
+
             const float x_mm = orbit_radius_mm * std::cos(open_loop_phase_rad_);
             const float y_mm = orbit_radius_mm * std::sin(open_loop_phase_rad_);
             const float yaw_offset_rad = std::atan2(-x_mm, board_distance_mm);
@@ -383,15 +620,15 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
 
             output.open_loop_active = true;
             output.open_loop_phase_rad = open_loop_phase_rad_;
-            output.open_loop_omega_rad_s = effective_omega_rad_s;  // show the omega actually used
+            output.open_loop_omega_rad_s = orbit_omega_rad_s;
             output.open_loop_distance_mm = board_distance_mm;
             output.view_angle_valid = true;
             output.view_delta_yaw_rad = yaw_offset_rad;
             output.view_delta_pitch_rad = pitch_offset_rad;
             output.feedforward_pitch_angle = pitch_angle_;
             output.feedforward_yaw_angle = yaw_angle_;
-            output.open_loop_speed_locked = true;
-            }
+            output.speed_identified = open_loop_locked_from_fit_;
+            output.identified_omega_rad_s = orbit_omega_rad_s;
 
             lost_count_ = 0;
             reset_pid(pid_pitch_);
@@ -478,6 +715,10 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.laser_pos = laser_pos;
     output.laser_target_error_px = (has_target && has_laser) ? cv::norm(target_pos - laser_pos) : 0.0f;
     output.board_distance_mm = info.board_distance_mm;
+    if (speed_id_event_pending_) {
+        output.speed_identified_event = true;
+        speed_id_event_pending_ = false;
+    }
 
     if (config_.draw_overlay) {
         output.canvas = frame.clone();
@@ -522,6 +763,14 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         if (has_target && target_pos.x >= 0.0f) {
             cv::circle(output.canvas, cv::Point(static_cast<int>(target_pos.x), static_cast<int>(target_pos.y)),
                        6, cv::Scalar(0, 0, 255), -1);
+        }
+        if (output.predicted_pos_valid && output.predicted_pos.x >= 0.0f && output.predicted_pos.y >= 0.0f) {
+            cv::drawMarker(output.canvas,
+                           cv::Point(static_cast<int>(output.predicted_pos.x), static_cast<int>(output.predicted_pos.y)),
+                           cv::Scalar(255, 80, 255),
+                           cv::MARKER_TILTED_CROSS,
+                           14,
+                           2);
         }
         if (has_laser && laser_pos.x >= 0.0f) {
             cv::circle(output.canvas, cv::Point(static_cast<int>(laser_pos.x), static_cast<int>(laser_pos.y)),
