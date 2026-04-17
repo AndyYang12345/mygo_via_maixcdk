@@ -972,7 +972,7 @@ int _main(int argc, char *argv[])
     cfg.enable_phase_lock = true;
     cfg.phase_lock_kp = 1.5f;
     cfg.phase_lock_ki = 0.02f;
-    cfg.phase_lock_kd = 0.06f;
+    cfg.phase_lock_kd = 0.0666501f;
     cfg.phase_lock_max_step_rad = 0.02f;
     cfg.phase_lock_integral_limit = 1.2f;
     cfg.phase_lock_omega_bias_limit_rad_s = 0.8f;
