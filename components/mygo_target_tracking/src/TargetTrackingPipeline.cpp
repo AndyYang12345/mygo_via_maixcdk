@@ -75,15 +75,16 @@ void TargetTrackingPipeline::start_tracking() {
         open_loop_distance_mm_ = std::max(1.0f, config_.open_loop_default_distance_mm);
         open_loop_locked_omega_rad_s_ = config_.open_loop_omega_rad_s;
         open_loop_locked_from_fit_ = false;
-        phase_corr_integral_ = 0.0f;
-        phase_corr_omega_bias_rad_s_ = 0.0f;
-        phase_corr_outlier_count_ = 0;
-        phase_corr_freeze_left_ = 0;
 
-        if (speed_id_valid_ &&
-            speed_id_omega_count_ >= std::max(1, config_.speed_id_min_samples) &&
-            std::isfinite(speed_id_omega_rad_s_) &&
-            std::abs(speed_id_omega_rad_s_) > 1e-4f) {
+        const float fallback_omega = config_.open_loop_omega_rad_s;
+        const float min_abs_lock_omega = std::max(0.15f, std::abs(fallback_omega) * 0.40f);
+        const bool fit_count_ok = speed_id_omega_count_ >= std::max(1, config_.speed_id_min_samples);
+        const bool fit_finite_ok = std::isfinite(speed_id_omega_rad_s_);
+        const bool fit_mag_ok = std::abs(speed_id_omega_rad_s_) >= min_abs_lock_omega;
+        const bool fit_sign_ok =
+            (std::abs(fallback_omega) <= 1e-6f) || (speed_id_omega_rad_s_ * fallback_omega > 0.0f);
+
+        if (speed_id_valid_ && fit_count_ok && fit_finite_ok && fit_mag_ok && fit_sign_ok) {
             open_loop_locked_omega_rad_s_ = speed_id_omega_rad_s_;
             open_loop_locked_from_fit_ = true;
             open_loop_phase_rad_ = wrap_angle_rad(speed_id_last_phase_rad_);
@@ -119,10 +120,6 @@ void TargetTrackingPipeline::reset() {
     open_loop_distance_mm_ = -1.0f;
     open_loop_locked_omega_rad_s_ = config_.open_loop_omega_rad_s;
     open_loop_locked_from_fit_ = false;
-    phase_corr_integral_ = 0.0f;
-    phase_corr_omega_bias_rad_s_ = 0.0f;
-    phase_corr_outlier_count_ = 0;
-    phase_corr_freeze_left_ = 0;
     last_board_distance_mm_ = -1.0f;
     speed_id_active_ = false;
     speed_id_valid_ = false;
@@ -227,12 +224,6 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.open_loop_phase_rad = open_loop_phase_rad_;
     output.open_loop_omega_rad_s = open_loop_locked_omega_rad_s_;
     output.open_loop_distance_mm = open_loop_distance_mm_;
-    output.phase_correction_active = false;
-    output.phase_error_rad = 0.0f;
-    output.phase_correction_step_rad = 0.0f;
-    output.phase_correction_omega_bias_rad_s = phase_corr_omega_bias_rad_s_;
-    output.phase_correction_skipped = false;
-    output.phase_correction_outlier_count = phase_corr_outlier_count_;
     output.predicted_pos_valid = false;
     output.predicted_pos = cv::Point2f(-1.0f, -1.0f);
     output.speed_identifying = speed_id_active_;
@@ -400,7 +391,16 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                 }
 
                 if (speed_id_validate_elapsed_s_ >= config_.speed_id_validate_s) {
-                    if (speed_id_all_in_roi_ && speed_id_samples_ >= config_.speed_id_min_samples) {
+                    const float fallback_omega = config_.open_loop_omega_rad_s;
+                    const float min_abs_lock_omega = std::max(0.15f, std::abs(fallback_omega) * 0.40f);
+                    const bool fit_mag_ok = std::abs(speed_id_omega_rad_s_) >= min_abs_lock_omega;
+                    const bool fit_sign_ok =
+                        (std::abs(fallback_omega) <= 1e-6f) || (speed_id_omega_rad_s_ * fallback_omega > 0.0f);
+
+                    if (speed_id_all_in_roi_ &&
+                        speed_id_samples_ >= config_.speed_id_min_samples &&
+                        fit_mag_ok &&
+                        fit_sign_ok) {
                         speed_id_valid_ = true;
                         speed_id_event_pending_ = true;
                         state_ = TrackState::Locked;
@@ -545,7 +545,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
         if (config_.enable_open_loop_phase_orbit && open_loop_phase_active_) {
             const TrackerConfig tracker_cfg = tracker_.get_config();
             const float orbit_radius_mm = std::max(1.0f, tracker_cfg.target_orbit_radius_mm);
-            const float orbit_omega_rad_s = open_loop_locked_omega_rad_s_ + phase_corr_omega_bias_rad_s_;
+            const float orbit_omega_rad_s = open_loop_locked_omega_rad_s_;
             const float board_distance_mm = std::max(
                 1.0f,
                 (open_loop_distance_mm_ > 0.0f)
@@ -556,55 +556,6 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
             const float prev_yaw = yaw_angle_;
 
             open_loop_phase_rad_ += orbit_omega_rad_s * dt;
-
-            if (config_.enable_phase_correction && has_target && info.roi_active) {
-                const cv::Point2f meas_delta = info.target_center - info.board_center;
-                const float meas_phase_rad = std::atan2(meas_delta.y, meas_delta.x);
-                const float phase_error = wrap_angle_rad(meas_phase_rad - open_loop_phase_rad_);
-
-                const bool innovation_outlier =
-                    std::abs(phase_error) > std::max(0.01f, config_.phase_corr_innovation_gate_rad);
-                if (innovation_outlier) {
-                    phase_corr_outlier_count_++;
-                    if (phase_corr_freeze_left_ <= 0) {
-                        phase_corr_freeze_left_ = std::max(0, config_.phase_corr_outlier_freeze_frames);
-                    }
-                } else {
-                    phase_corr_outlier_count_ = 0;
-                }
-
-                float corr_step = 0.0f;
-                bool skipped = false;
-                if (phase_corr_freeze_left_ > 0) {
-                    skipped = true;
-                    phase_corr_freeze_left_--;
-                } else {
-                    phase_corr_integral_ += phase_error * dt;
-                    phase_corr_integral_ = clamp_value(
-                        phase_corr_integral_,
-                        -config_.phase_corr_integral_limit,
-                        config_.phase_corr_integral_limit);
-
-                    phase_corr_omega_bias_rad_s_ += config_.phase_corr_ki * phase_error * dt;
-                    phase_corr_omega_bias_rad_s_ = clamp_value(
-                        phase_corr_omega_bias_rad_s_,
-                        -config_.phase_corr_omega_bias_limit_rad_s,
-                        config_.phase_corr_omega_bias_limit_rad_s);
-
-                    corr_step = clamp_value(
-                        config_.phase_corr_kp * phase_error,
-                        -config_.phase_corr_max_step_rad,
-                        config_.phase_corr_max_step_rad);
-                    open_loop_phase_rad_ += corr_step;
-                }
-
-                output.phase_correction_active = true;
-                output.phase_error_rad = phase_error;
-                output.phase_correction_step_rad = corr_step;
-                output.phase_correction_omega_bias_rad_s = phase_corr_omega_bias_rad_s_;
-                output.phase_correction_skipped = skipped;
-                output.phase_correction_outlier_count = phase_corr_outlier_count_;
-            }
 
             const float x_mm = orbit_radius_mm * std::cos(open_loop_phase_rad_);
             const float y_mm = orbit_radius_mm * std::sin(open_loop_phase_rad_);

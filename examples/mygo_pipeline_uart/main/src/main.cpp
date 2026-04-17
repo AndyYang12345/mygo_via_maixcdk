@@ -1011,6 +1011,10 @@ int _main(int argc, char *argv[])
     VisionAppState app_state = VisionAppState::Idle;
     bool recognition_active = false;
     bool tracking_enabled = false;
+    bool tracking_start_pending = false;
+    bool pending_init_pose_valid = false;
+    int pending_init_yaw_pwm = 1500;
+    int pending_init_pitch_pwm = 1500;
     uint64_t run_start_ms = time::ticks_ms();
     uint64_t frame_index = 0;
     uint64_t last_tick_ms = time::ticks_ms();
@@ -1023,7 +1027,8 @@ int _main(int argc, char *argv[])
     constexpr uint64_t kStreamIntervalMs = 300;
     constexpr uint64_t kCmdLogFlushIntervalMs = 500;
     constexpr uint64_t kInfoLogIntervalMs = 500;
-    constexpr uint64_t kStatusPushIntervalMs = 30;
+    // Use request-driven status path (no unsolicited push) to avoid stale queued status frames.
+    constexpr uint64_t kStatusPushIntervalMs = 0;
     http::JpegStreamer stream("", kStreamPort);
     stream.set_html(kStreamHtml);
     bool stream_active = false;
@@ -1032,7 +1037,6 @@ int _main(int argc, char *argv[])
     uint64_t last_cmd_log_flush_ms = last_stream_ms;
     uint64_t last_distance_log_ms = 0;
     uint64_t last_speed_validate_log_ms = 0;
-    uint64_t last_open_loop_log_ms = 0;
 
     while (!app::need_exit()) {
         PendingControl control;
@@ -1056,6 +1060,8 @@ int _main(int argc, char *argv[])
         if (control.stop_requested) {
             recognition_active = false;
             tracking_enabled = false;
+            tracking_start_pending = false;
+            pending_init_pose_valid = false;
             app_state = VisionAppState::Stopped;
             pipeline.reset();
             pipeline.set_control_enabled(false);
@@ -1079,19 +1085,28 @@ int _main(int argc, char *argv[])
                 recognition_active = true;
                 last_state = TrackState::Waiting;
             }
+
+            if (control.tracking_init_pose_valid) {
+                pending_init_yaw_pwm = control.init_yaw_pwm;
+                pending_init_pitch_pwm = control.init_pitch_pwm;
+                pending_init_pose_valid = true;
+            }
+
             if (!tracking_enabled) {
                 if (last_output.state == TrackState::Locked && last_output.speed_identified) {
                     tracking_enabled = true;
+                    tracking_start_pending = false;
                     pipeline.set_control_enabled(true);
-                    if (control.tracking_init_pose_valid) {
-                        const float yaw_deg = pwm_to_angle_deg(control.init_yaw_pwm, cfg.yaw_pwm_zero_angle);
-                        const float pitch_deg = pwm_to_angle_deg(control.init_pitch_pwm, cfg.pitch_pwm_zero_angle);
+                    if (pending_init_pose_valid) {
+                        const float yaw_deg = pwm_to_angle_deg(pending_init_yaw_pwm, cfg.yaw_pwm_zero_angle);
+                        const float pitch_deg = pwm_to_angle_deg(pending_init_pitch_pwm, cfg.pitch_pwm_zero_angle);
                         pipeline.set_current_angles(pitch_deg, yaw_deg);
                         log::info("tracking init pose from host pwm: yaw=%d(%.2fdeg) pitch=%d(%.2fdeg)",
-                                  control.init_yaw_pwm,
+                                  pending_init_yaw_pwm,
                                   yaw_deg,
-                                  control.init_pitch_pwm,
+                                  pending_init_pitch_pwm,
                                   pitch_deg);
+                        pending_init_pose_valid = false;
                     }
                     pipeline.start_tracking();
                     app_state = VisionAppState::Running;
@@ -1104,8 +1119,9 @@ int _main(int argc, char *argv[])
                               cfg.enable_open_loop_phase_orbit ? 1 : 0,
                               cfg.open_loop_omega_rad_s);
                 } else {
+                    tracking_start_pending = true;
                     pipeline.set_control_enabled(true);
-                    log::info("tracking start requested but speed-id is not ready, wait for LOCKED then press A");
+                    log::info("tracking start armed, waiting for LOCKED + speed-id ready");
                 }
             } else {
                 pipeline.set_control_enabled(true);
@@ -1119,6 +1135,8 @@ int _main(int argc, char *argv[])
             pipeline.handle_key(' ');
             recognition_active = true;
             tracking_enabled = false;
+            tracking_start_pending = false;
+            pending_init_pose_valid = false;
             app_state = VisionAppState::Running;
             last_state = TrackState::Waiting;
             if (!stream_active) {
@@ -1188,6 +1206,34 @@ int _main(int argc, char *argv[])
                           out.identified_phase_rad);
             }
 
+            if (tracking_start_pending && !tracking_enabled &&
+                out.state == TrackState::Locked && out.speed_identified) {
+                tracking_enabled = true;
+                tracking_start_pending = false;
+                pipeline.set_control_enabled(true);
+                if (pending_init_pose_valid) {
+                    const float yaw_deg = pwm_to_angle_deg(pending_init_yaw_pwm, cfg.yaw_pwm_zero_angle);
+                    const float pitch_deg = pwm_to_angle_deg(pending_init_pitch_pwm, cfg.pitch_pwm_zero_angle);
+                    pipeline.set_current_angles(pitch_deg, yaw_deg);
+                    log::info("tracking pending-start pose applied: yaw=%d(%.2fdeg) pitch=%d(%.2fdeg)",
+                              pending_init_yaw_pwm,
+                              yaw_deg,
+                              pending_init_pitch_pwm,
+                              pitch_deg);
+                    pending_init_pose_valid = false;
+                }
+                pipeline.start_tracking();
+                app_state = VisionAppState::Running;
+                if (stream_active) {
+                    stream.stop();
+                    stream_active = false;
+                    log::info("background stream stopped (pending tracking start)");
+                }
+                log::info("tracking auto-start from armed request (open_loop=%d, omega=%.4f rad/s)",
+                          cfg.enable_open_loop_phase_orbit ? 1 : 0,
+                          cfg.open_loop_omega_rad_s);
+            }
+
             if (out.state != last_state) {
                 log::info("[STATE] %s -> %s",
                           state_to_text(last_state),
@@ -1200,20 +1246,18 @@ int _main(int argc, char *argv[])
             }
 
             if (tracking_enabled && out.open_loop_active) {
-                if ((now_tick_ms - last_open_loop_log_ms) >= kInfoLogIntervalMs) {
-                    log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f phase_err=%.4f step=%.4f wbias=%.4f skip=%d outliers=%d",
-                              out.open_loop_phase_rad,
-                              out.open_loop_omega_rad_s,
-                              out.open_loop_distance_mm,
-                              out.pitch_angle,
-                              out.yaw_angle,
-                              out.phase_error_rad,
-                              out.phase_correction_step_rad,
-                              out.phase_correction_omega_bias_rad_s,
-                              out.phase_correction_skipped ? 1 : 0,
-                              out.phase_correction_outlier_count);
-                    last_open_loop_log_ms = now_tick_ms;
-                }
+                log::info("open-loop orbit: phase=%.3f rad omega=%.3f rad/s dist=%.1f mm pitch=%.2f yaw=%.2f",
+                          out.open_loop_phase_rad,
+                          out.open_loop_omega_rad_s,
+                          out.open_loop_distance_mm,
+                          out.pitch_angle,
+                          out.yaw_angle);
+            }
+
+            if (tracking_enabled && !out.command.empty()) {
+                log::info("servo-cmd frame=%llu: %s",
+                          static_cast<unsigned long long>(frame_index),
+                          out.command.c_str());
             }
             last_state = out.state;
         } else {

@@ -93,8 +93,11 @@ private:
     }
     /// 根据角度差和速度计算执行时间，并约束到协议范围。
     int compute_time_ms(float clamped_angle) const{
-        (void)clamped_angle;
-        return 0;
+        if (_speed <= 0.0f) {
+            return 0;
+        }
+        const int t = static_cast<int>(std::abs(clamped_angle - _last_angle) / _speed * 1000.0f);
+        return std::clamp(t, 0, 9999);
     }
     /// 根据当前 PWM/时间状态重建单舵机命令字符串。
     void rebuild_command_buffer(){
