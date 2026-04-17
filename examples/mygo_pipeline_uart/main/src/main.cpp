@@ -970,7 +970,7 @@ int _main(int argc, char *argv[])
     cfg.enable_view_angle_feedforward = true;
     cfg.enable_open_loop_phase_orbit = true;
     cfg.enable_phase_lock = true;
-    cfg.phase_lock_kp = 0.50f;
+    cfg.phase_lock_kp = 1.00f;
     cfg.phase_lock_ki = 0.06f;
     cfg.phase_lock_kd = 0.00f;
     cfg.phase_lock_max_step_rad = 0.02f;
