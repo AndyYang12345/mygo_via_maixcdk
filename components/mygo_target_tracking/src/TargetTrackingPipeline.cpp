@@ -77,6 +77,8 @@ void TargetTrackingPipeline::start_tracking() {
         open_loop_locked_from_fit_ = false;
         phase_lock_integral_ = 0.0f;
         phase_lock_omega_bias_rad_s_ = 0.0f;
+        phase_lock_prev_error_rad_ = 0.0f;
+        phase_lock_has_prev_error_ = false;
         phase_lock_outlier_count_ = 0;
         phase_lock_freeze_left_ = 0;
         phase_lock_valid_frames_ = 0;
@@ -126,6 +128,8 @@ void TargetTrackingPipeline::reset() {
     open_loop_locked_from_fit_ = false;
     phase_lock_integral_ = 0.0f;
     phase_lock_omega_bias_rad_s_ = 0.0f;
+    phase_lock_prev_error_rad_ = 0.0f;
+    phase_lock_has_prev_error_ = false;
     phase_lock_outlier_count_ = 0;
     phase_lock_freeze_left_ = 0;
     phase_lock_valid_frames_ = 0;
@@ -234,6 +238,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.open_loop_omega_rad_s = open_loop_locked_omega_rad_s_;
     output.open_loop_distance_mm = open_loop_distance_mm_;
     output.phase_lock_active = false;
+    output.phase_lock_target_phase_rad = 0.0f;
     output.phase_lock_error_rad = 0.0f;
     output.phase_lock_step_rad = 0.0f;
     output.phase_lock_omega_bias_rad_s = phase_lock_omega_bias_rad_s_;
@@ -576,6 +581,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                 const cv::Point2f meas_delta = info.target_center - info.board_center;
                 const float meas_phase_rad = std::atan2(meas_delta.y, meas_delta.x);
                 const float phase_error = wrap_angle_rad(meas_phase_rad - open_loop_phase_rad_);
+                output.phase_lock_target_phase_rad = wrap_angle_rad(meas_phase_rad);
                 const bool innovation_outlier =
                     std::abs(phase_error) > std::max(0.01f, config_.phase_lock_innovation_gate_rad);
 
@@ -602,17 +608,25 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                         -config_.phase_lock_integral_limit,
                         config_.phase_lock_integral_limit);
 
-                    phase_lock_omega_bias_rad_s_ += config_.phase_lock_ki * phase_error * dt;
+                    float derr = 0.0f;
+                    if (phase_lock_has_prev_error_ && dt > 1e-6f) {
+                        derr = (phase_error - phase_lock_prev_error_rad_) / dt;
+                    }
+                    phase_lock_prev_error_rad_ = phase_error;
+                    phase_lock_has_prev_error_ = true;
+
+                    const float omega_delta =
+                        config_.phase_lock_kp * phase_error +
+                        config_.phase_lock_ki * phase_lock_integral_ +
+                        config_.phase_lock_kd * derr;
+
                     phase_lock_omega_bias_rad_s_ = clamp_value(
-                        phase_lock_omega_bias_rad_s_,
+                        omega_delta,
                         -config_.phase_lock_omega_bias_limit_rad_s,
                         config_.phase_lock_omega_bias_limit_rad_s);
 
-                    corr_step = clamp_value(
-                        config_.phase_lock_kp * phase_error,
-                        -config_.phase_lock_max_step_rad,
-                        config_.phase_lock_max_step_rad);
-                    open_loop_phase_rad_ += corr_step;
+                    // For observability, keep this field as equivalent phase adjustment per frame.
+                    corr_step = phase_lock_omega_bias_rad_s_ * dt;
                 } else {
                     skipped = true;
                 }
@@ -625,6 +639,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                 output.phase_lock_outlier_count = phase_lock_outlier_count_;
             } else {
                 phase_lock_valid_frames_ = 0;
+                phase_lock_has_prev_error_ = false;
             }
 
             const float x_mm = orbit_radius_mm * std::cos(open_loop_phase_rad_);

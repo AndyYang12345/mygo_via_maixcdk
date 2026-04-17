@@ -71,16 +71,17 @@ struct PipelineConfig {
     float angle_lowpass_tau_s = 0.06f;
 
     // Closed-loop phase lock on top of open-loop orbit.
-    // Keep omega feedforward as primary driver, and apply small phase correction per frame.
+    // Keep omega feedforward as primary driver, and map phase error to temporary omega increment.
     bool enable_phase_lock = false;
-    float phase_lock_kp = 0.10f;
-    float phase_lock_ki = 0.03f;
+    float phase_lock_kp = 0.30f;
+    float phase_lock_ki = 0.06f;
+    float phase_lock_kd = 0.00f;
     float phase_lock_max_step_rad = 0.02f;
     float phase_lock_integral_limit = 1.2f;
     float phase_lock_omega_bias_limit_rad_s = 0.35f;
-    float phase_lock_innovation_gate_rad = 0.60f;
+    float phase_lock_innovation_gate_rad = 3.1415926f;
     int phase_lock_outlier_freeze_frames = 2;
-    int phase_lock_min_valid_frames = 3;
+    int phase_lock_min_valid_frames = 1;
 
     // ROI-based speed identification in Searching state.
     bool enable_speed_identification = false;
@@ -126,6 +127,7 @@ struct PipelineOutput {
     float open_loop_omega_rad_s = 0.0f;
     float open_loop_distance_mm = -1.0f;
     bool phase_lock_active = false;
+    float phase_lock_target_phase_rad = 0.0f;
     float phase_lock_error_rad = 0.0f;
     float phase_lock_step_rad = 0.0f;
     float phase_lock_omega_bias_rad_s = 0.0f;
@@ -242,6 +244,8 @@ private:
     bool open_loop_locked_from_fit_ = false;
     float phase_lock_integral_ = 0.0f;
     float phase_lock_omega_bias_rad_s_ = 0.0f;
+    float phase_lock_prev_error_rad_ = 0.0f;
+    bool phase_lock_has_prev_error_ = false;
     int phase_lock_outlier_count_ = 0;
     int phase_lock_freeze_left_ = 0;
     int phase_lock_valid_frames_ = 0;
