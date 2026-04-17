@@ -926,9 +926,10 @@ int _main(int argc, char *argv[])
     cfg.print_debug = false;
     cfg.enable_view_angle_feedforward = true;
     cfg.enable_open_loop_phase_orbit = true;
-    cfg.open_loop_omega_rad_s = 1.0471976f; // pi/3 rad/s
+    cfg.open_loop_omega_rad_s = 1.806f; // fixed open-loop speed for hardware troubleshooting
     cfg.open_loop_phase_init_rad = 0.0f;
     cfg.open_loop_default_distance_mm = nominal_target_distance_mm;
+    cfg.enable_target_rpm_measurement = false;
     pipeline.set_config(cfg);
     log::info("aim center compensation: laser_offset_up=%.2fmm, distance=%.2fmm, px_per_mm=%.4f, cy_shift=%.2fpx, cy=%.2f",
               laser_offset_up_mm,
@@ -1102,9 +1103,11 @@ int _main(int argc, char *argv[])
             }
 
             if (tracking_enabled && out.open_loop_active) {
-                log::info("open-loop: omega=%.4f rad/s phase=%.3f rad",
+                log::info("open-loop: omega_used=%.4f rad/s omega_measured=%.4f rad/s phase=%.3f rad lock=%d",
+                          out.open_loop_omega_rad_s,
                           out.measured_target_omega_rad_s,
-                          out.open_loop_phase_rad);
+                          out.open_loop_phase_rad,
+                          out.open_loop_speed_locked ? 1 : 0);
             }
             last_state = out.state;
         } else {
