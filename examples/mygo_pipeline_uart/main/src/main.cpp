@@ -970,7 +970,7 @@ int _main(int argc, char *argv[])
     cfg.enable_view_angle_feedforward = true;
     cfg.enable_open_loop_phase_orbit = true;
     cfg.enable_phase_lock = true;
-    cfg.phase_lock_kp = 0.30f;
+    cfg.phase_lock_kp = 0.50f;
     cfg.phase_lock_ki = 0.06f;
     cfg.phase_lock_kd = 0.00f;
     cfg.phase_lock_max_step_rad = 0.02f;
@@ -997,7 +997,7 @@ int _main(int argc, char *argv[])
     tracker_cfg.camera_fx_px = cfg.fx;
     tracker_cfg.camera_fy_px = cfg.fy;
     tracker_cfg.enable_board_distance_estimation = true;
-    tracker_cfg.board_distance_calibration_scale = 1.4f;
+    tracker_cfg.board_distance_calibration_scale = 1.2f;
     pipeline.set_tracker_config(tracker_cfg);
 
     VisionControlTcpServer tcp_server(tcp_port);
