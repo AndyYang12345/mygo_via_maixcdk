@@ -39,7 +39,7 @@ public:
     void prepare_motion(float min_angle_deg, float max_angle_deg){
         const float clamped = std::clamp(_angle, min_angle_deg, max_angle_deg);
         _pwm = angle_to_pwm(clamped, min_angle_deg, max_angle_deg);
-        _time_ms = compute_time_ms(clamped);
+        _time_ms = 0;
         _last_angle = clamped;
         rebuild_command_buffer();
     }
@@ -50,7 +50,7 @@ public:
         const float delta_deg = clamped - zero_angle_deg;
         const float pwm = 1500.0f + delta_deg * kPwmPerDeg;
         _pwm = std::clamp(static_cast<int>(std::lround(pwm)), 500, 2500);
-        _time_ms = compute_time_ms(clamped);
+        _time_ms = 0;
         _last_angle = clamped;
         rebuild_command_buffer();
     }
