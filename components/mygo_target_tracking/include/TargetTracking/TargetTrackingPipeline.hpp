@@ -128,6 +128,7 @@ struct PipelineOutput {
     bool speed_identified = false;
     bool speed_identified_event = false;
     float identified_omega_rad_s = 0.0f;
+    float identified_phase_rad = 0.0f;
     float instant_omega_rad_s = 0.0f;
     float fitted_omega_rad_s = 0.0f;
     int speed_fit_samples = 0;

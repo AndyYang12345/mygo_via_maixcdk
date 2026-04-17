@@ -86,6 +86,7 @@ void TargetTrackingPipeline::start_tracking() {
             std::abs(speed_id_omega_rad_s_) > 1e-4f) {
             open_loop_locked_omega_rad_s_ = speed_id_omega_rad_s_;
             open_loop_locked_from_fit_ = true;
+            open_loop_phase_rad_ = wrap_angle_rad(speed_id_last_phase_rad_);
         }
     } else {
         open_loop_phase_active_ = false;
@@ -238,6 +239,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
     output.speed_identified = speed_id_valid_;
     output.speed_identified_event = false;
     output.identified_omega_rad_s = speed_id_valid_ ? speed_id_omega_rad_s_ : config_.open_loop_omega_rad_s;
+    output.identified_phase_rad = wrap_angle_rad(speed_id_last_phase_rad_);
     output.instant_omega_rad_s = speed_id_inst_omega_rad_s_;
     output.fitted_omega_rad_s = speed_id_omega_rad_s_;
     output.speed_fit_samples = speed_id_omega_count_;
@@ -390,6 +392,7 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                         output.speed_validation_error_px = error_px;
                         output.speed_validation_tolerance_px = tolerance_px;
                         output.identified_omega_rad_s = speed_id_omega_rad_s_;
+                        output.identified_phase_rad = wrap_angle_rad(speed_id_last_phase_rad_);
                         output.instant_omega_rad_s = speed_id_inst_omega_rad_s_;
                         output.fitted_omega_rad_s = speed_id_omega_rad_s_;
                         output.speed_fit_samples = speed_id_samples_;
@@ -409,7 +412,8 @@ PipelineOutput TargetTrackingPipeline::process_frame(const cv::Mat& frame, float
                         if (config_.print_debug) {
                             std::cout << std::fixed << std::setprecision(4)
                                       << "[SpeedID] success omega=" << speed_id_omega_rad_s_
-                                      << " rad/s" << std::endl;
+                                      << " phase=" << wrap_angle_rad(speed_id_last_phase_rad_)
+                                      << " rad" << std::endl;
                         }
                     } else {
                         speed_id_active_ = false;
