@@ -54,6 +54,9 @@ struct TrackerConfig {
     float roi_area_score_weight = 0.4f;
     float roi_circularity_reject_threshold = 0.82f;
     float roi_center_reject_radius = 45.0f;
+    float roi_max_step_pixels = 50.0f;  // 第一层稳定性改进：ROI最大单帧步长限制（像素）
+    float roi_color_locking_threshold = 0.7f;  // 第二层稳定性改进：颜色锁定相似度阈值（0.0-1.0），防止误切到其他色块
+    int roi_color_mismatch_tolerance = 3;      // 连续颜色不匹配多少帧后触发回退
     bool use_kalman = true;
     float kalman_dt = 1.0f / 30.0f;
 
@@ -200,6 +203,11 @@ private:
     bool roi_tracking_active_ = false;
     cv::Scalar target_color_bgr_;
     cv::Scalar target_color_hsv_;
+    // 第二层稳定性改进：当前ROI锚定的目标色块颜色信息
+    cv::Scalar roi_target_color_bgr_locked_;
+    cv::Scalar roi_target_color_hsv_locked_;
+    bool roi_target_color_locked_ = false;       // 是否已锁定目标色块颜色
+    int roi_color_mismatch_count_ = 0;           // 连续颜色不匹配计数
     cv::KalmanFilter kalman_;
     bool kalman_initialized_ = false;
     float estimated_board_distance_mm_ = -1.0f;
