@@ -66,7 +66,7 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
     }
 
     bool target_ready = false;
-    if (roi_tracking_active_) {
+    if (config_.enable_roi_tracking && roi_tracking_active_) {
         if (update_roi_tracking(frame, result)) {
             target_ready = result.found;
         } else {
@@ -166,8 +166,25 @@ TargetInfo TargetTracker::process_frame(const Mat& frame) {
             cout << "  Angle: " << result.angle << " degrees" << endl;
         }
     
-        // 初始化ROI跟踪
-        init_roi_tracking(frame, *target_blob);
+        if (config_.enable_roi_tracking) {
+            // 初始化ROI跟踪
+            init_roi_tracking(frame, *target_blob);
+        } else {
+            // 非ROI模式：输出虚拟ROI，保持Speed-ID/Lock链路不变。
+            roi_tracking_active_ = false;
+            const int half = std::max(1, config_.virtual_roi_half_size);
+            const int cx_i = static_cast<int>(std::lround(result.target_center.x));
+            const int cy_i = static_cast<int>(std::lround(result.target_center.y));
+            cv::Rect virtual_roi(
+                std::max(0, cx_i - half),
+                std::max(0, cy_i - half),
+                0,
+                0);
+            virtual_roi.width = std::min(frame.cols - virtual_roi.x, half * 2);
+            virtual_roi.height = std::min(frame.rows - virtual_roi.y, half * 2);
+            result.roi_active = (virtual_roi.width > 0 && virtual_roi.height > 0);
+            result.roi_rect = result.roi_active ? virtual_roi : cv::Rect(-1, -1, 0, 0);
+        }
 
         // Step 5: 调试显示
         if (config_.show_debug_windows) {

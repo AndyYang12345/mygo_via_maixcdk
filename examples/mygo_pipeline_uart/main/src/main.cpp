@@ -994,11 +994,16 @@ int _main(int argc, char *argv[])
     TrackerConfig tracker_cfg = pipeline.get_tracker_config();
     tracker_cfg.show_debug_windows = false;
     tracker_cfg.print_debug_info = false;
+    tracker_cfg.enable_roi_tracking = false;  // feature/no-roi-target-tracking: 全图追踪实验
+    tracker_cfg.virtual_roi_half_size = 70;   // 兼容speed-id链路的虚拟ROI半径
     tracker_cfg.camera_fx_px = cfg.fx;
     tracker_cfg.camera_fy_px = cfg.fy;
     tracker_cfg.enable_board_distance_estimation = true;
     tracker_cfg.board_distance_calibration_scale = 1.2f;
     pipeline.set_tracker_config(tracker_cfg);
+    log::info("tracker mode: ROI tracking %s (virtual_roi_half_size=%d)",
+              tracker_cfg.enable_roi_tracking ? "ENABLED" : "DISABLED",
+              tracker_cfg.virtual_roi_half_size);
 
     VisionControlTcpServer tcp_server(tcp_port);
     if (!tcp_server.start()) {

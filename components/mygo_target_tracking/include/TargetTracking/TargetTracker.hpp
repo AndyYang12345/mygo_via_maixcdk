@@ -40,6 +40,11 @@ struct TrackerConfig {
     bool show_debug_windows = false;
     bool print_debug_info = false;
 
+    // 非ROI实验模式：关闭ROI窗口跟踪，始终走全图识别。
+    // 为兼容既有Speed-ID/Lock链路，会输出一个围绕目标点的虚拟ROI。
+    bool enable_roi_tracking = true;
+    int virtual_roi_half_size = 70;
+
     // ROI 跟踪参数
     int roi_padding = 60;
     int roi_max_padding = 100;
