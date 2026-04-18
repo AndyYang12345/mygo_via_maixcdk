@@ -42,8 +42,8 @@ struct TrackerConfig {
 
     // ROI 跟踪参数
     int roi_padding = 60;
-    int roi_max_padding = 130;
-    float roi_velocity_padding_gain = 0.8f;
+    int roi_max_padding = 100;
+    float roi_velocity_padding_gain = 0.5f;
     int roi_min_blob_area = 200;
     int roi_max_blob_area = 8000;
     int roi_hue_threshold = 12;   // 0-180
@@ -54,9 +54,9 @@ struct TrackerConfig {
     float roi_area_score_weight = 0.4f;
     float roi_circularity_reject_threshold = 0.82f;
     float roi_center_reject_radius = 45.0f;
-    float roi_max_step_pixels = 50.0f;  // 第一层稳定性改进：ROI最大单帧步长限制（像素）
-    float roi_color_locking_threshold = 0.7f;  // 第二层稳定性改进：颜色锁定相似度阈值（0.0-1.0），防止误切到其他色块
-    int roi_color_mismatch_tolerance = 3;      // 连续颜色不匹配多少帧后触发回退
+    float roi_max_step_pixels = 80.0f;  // 第一层稳定性改进：ROI最大单帧步长限制（像素）
+    float roi_color_locking_threshold = 0.5f;  // 第二层稳定性改进：颜色锁定相似度阈值（0.0-1.0），防止误切到其他色块
+    int roi_color_mismatch_tolerance = 5;      // 连续颜色不匹配多少帧后触发回退
     bool use_kalman = true;
     float kalman_dt = 1.0f / 30.0f;
 
