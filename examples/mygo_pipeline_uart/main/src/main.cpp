@@ -970,12 +970,12 @@ int _main(int argc, char *argv[])
     cfg.enable_view_angle_feedforward = true;
     cfg.enable_open_loop_phase_orbit = true;
     cfg.enable_phase_lock = true;
-    cfg.phase_lock_kp = 1.4f;
+    cfg.phase_lock_kp = 1.0f;
     cfg.phase_lock_ki = 0.0f;
-    cfg.phase_lock_kd = 0.01f;
+    cfg.phase_lock_kd = 0.19f;
     cfg.phase_lock_max_step_rad = 0.02f;
     cfg.phase_lock_integral_limit = 1.2f;
-    cfg.phase_lock_omega_bias_limit_rad_s = 0.8f;
+    cfg.phase_lock_omega_bias_limit_rad_s = 0.4f;
     cfg.phase_lock_innovation_gate_rad = 3.1415926f;
     cfg.phase_lock_outlier_freeze_frames = 2;
     cfg.phase_lock_min_valid_frames = 1;

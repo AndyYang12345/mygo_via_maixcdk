@@ -315,6 +315,12 @@ void TargetTracker::reset_roi_tracking() {
     startup_target_position_ = cv::Point2f(-1.0f, -1.0f);
     last_board_position_ = cv::Point2f(-1.0f, -1.0f);
     last_laser_position_ = cv::Point2f(-1.0f, -1.0f);
+    
+    // 第二层稳定性改进：重置当前色块锚定状态
+    roi_target_color_locked_ = false;
+    roi_color_mismatch_count_ = 0;
+    roi_target_color_bgr_locked_ = cv::Scalar(0, 0, 0);
+    roi_target_color_hsv_locked_ = cv::Scalar(0, 0, 0);
 }
 
 bool TargetTracker::detect_laser_dot(const cv::Mat& frame,
@@ -421,6 +427,23 @@ bool TargetTracker::init_roi_tracking(const cv::Mat& frame, const ColorBlob& tar
 
     target_color_bgr_ = target_blob.mean_color_bgr;
     target_color_hsv_ = bgr_to_hsv(target_color_bgr_);
+    
+    // 第二层稳定性改进：锁定当前ROI目标色块颜色，防止误切到其他色块
+    roi_target_color_bgr_locked_ = target_blob.mean_color_bgr;
+    roi_target_color_hsv_locked_ = target_color_hsv_;
+    roi_target_color_locked_ = true;
+    roi_color_mismatch_count_ = 0;
+    
+    if (config_.print_debug_info) {
+        cout << "[ROI] Target color locked: BGR(" 
+             << static_cast<int>(target_color_bgr_[0]) << ","
+             << static_cast<int>(target_color_bgr_[1]) << ","
+             << static_cast<int>(target_color_bgr_[2]) << ") -> HSV("
+             << static_cast<int>(target_color_hsv_[0]) << ","
+             << static_cast<int>(target_color_hsv_[1]) << ","
+             << static_cast<int>(target_color_hsv_[2]) << ")" << endl;
+    }
+    
     last_target_position_ = target_blob.center;
     if (!has_startup_target_position_) {
         startup_target_position_ = target_blob.center;
@@ -501,10 +524,28 @@ bool TargetTracker::update_roi_tracking(const cv::Mat& frame, TargetInfo& result
     }
 
     if (detected) {
-        last_target_position_ = detected_center;
-        if (config_.use_kalman && kalman_initialized_) {
-            cv::Mat measurement = (cv::Mat_<float>(2, 1) << detected_center.x, detected_center.y);
-            kalman_.correct(measurement);
+        // 第一层稳定性改进：限制ROI单帧最大步长
+        cv::Point2f delta = detected_center - last_target_position_;
+        float step_distance = cv::norm(delta);
+        
+        if (step_distance > config_.roi_max_step_pixels) {
+            // 检测到超大跳跃，使用预测点而非检测点，防止ROI意外逃逸
+            if (config_.print_debug_info) {
+                cout << "[ROI] step limit triggered: detected jump " << step_distance 
+                     << "px > " << config_.roi_max_step_pixels << "px, using prediction" << endl;
+            }
+            last_target_position_ = predict_point;
+            if (config_.use_kalman && kalman_initialized_) {
+                cv::Mat measurement = (cv::Mat_<float>(2, 1) << predict_point.x, predict_point.y);
+                kalman_.correct(measurement);
+            }
+        } else {
+            // 正常情况，使用检测的中心点
+            last_target_position_ = detected_center;
+            if (config_.use_kalman && kalman_initialized_) {
+                cv::Mat measurement = (cv::Mat_<float>(2, 1) << detected_center.x, detected_center.y);
+                kalman_.correct(measurement);
+            }
         }
     } else if (config_.use_kalman && kalman_initialized_) {
         last_target_position_ = predict_point;
@@ -596,6 +637,39 @@ bool TargetTracker::detect_target_in_roi(const cv::Mat& frame,
             target_color_bgr_,
             mean_bgr,
             false));
+
+        // 第二层稳定性改进：当前色块锚定验证
+        // 如果已锁定目标色块颜色，验证检测到的色块是否与锁定的颜色足够接近
+        if (roi_target_color_locked_) {
+            const float locked_color_similarity = static_cast<float>(calculate_color_similarity(
+                roi_target_color_bgr_locked_,
+                mean_bgr,
+                false));
+            
+            // 如果颜色相似度低于阈值，计数并可能触发回退
+            if (locked_color_similarity < config_.roi_color_locking_threshold) {
+                roi_color_mismatch_count_++;
+                if (config_.print_debug_info) {
+                    cout << "[ROI] Color mismatch: similarity=" << locked_color_similarity 
+                         << " < threshold=" << config_.roi_color_locking_threshold 
+                         << ", mismatch_count=" << roi_color_mismatch_count_ << endl;
+                }
+                
+                // 连续多帧颜色不匹配时触发fallback
+                if (roi_color_mismatch_count_ >= config_.roi_color_mismatch_tolerance) {
+                    if (config_.print_debug_info) {
+                        cout << "[ROI] Color mismatch tolerance exceeded, fallback to full detection" << endl;
+                    }
+                    return false;
+                }
+                
+                // 这一次虽然检测到了色块，但颜色不匹配，跳过这个色块继续搜寻其他色块
+                continue;
+            } else {
+                // 颜色匹配良好，重置不匹配计数
+                roi_color_mismatch_count_ = 0;
+            }
+        }
 
         const float dist_to_expected = cv::norm(center_global - expected_center_global);
         const float dist_score = std::max(0.0f, 1.0f - dist_to_expected / std::max(1.0f, static_cast<float>(std::max(roi.width, roi.height))));
