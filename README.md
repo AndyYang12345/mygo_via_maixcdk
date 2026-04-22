@@ -1,95 +1,35 @@
-MaixCDK
-===
+# MyG0 视觉任务开源
 
-<div align="center">
+这个仓库是我们学校机甲杯校内赛中我们战队的视觉项目工程，基于MaixCDK开发，部署于Sipeed家的Maixcam2平台。
+本人懒得对原仓库进行剔除后提交，遂直接把整个编译链上传了。本人修改位于components中的TargetTracking目录，创建了自己需要用到的识别算法、云台舵机驱动、遗传算法模板和包装好的识别-追踪管线。
+主函数位于examples中的Mygo_pipeline_uart，虽然叫这个名字，但其实指令传输链路是和上位机建立TCP连接，最开始想直接通过相机模块的串口线直接驱动舵机的，但是由于各种工程原因未能实现。TCP连接为我贡献了更多可以调试的信息和更多可以与ROS对接的接口。
+部署后按照MaixCDK官方要求添加工具链到环境变量，再项目目录下执行``` maixcdk build -p maixcam2 ```即可。待工具链下载完成后即自动开始编译，编译完成后在dist目录中能够找到可执行文件，通过MaixVision官方IDE或是其他方式安装至maixcam2并运行即可。
+注意如果直接运行文件需要先``` chmod +x ```赋予权限。如果直接用``` maixcdk deploy ```也可以生成安装二维码并安装至相机，通过应用界面调用。
 
-![](https://wiki.sipeed.com/maixcdk/static/image/maixcams.png)
+## 依赖
 
+本项目依赖以下第三方组件：
 
-<h2>MaixCDK: 快速落地 AI 视觉、听觉应用</h2>
+### MaixCDK
+- **版权方**: Copyright (c) 2023- Sipeed Ltd.
+- **开源许可证**: Apache 2.0
+- **原始仓库**: [MaixCDK 官方仓库地址]
 
-**Let's Sipeed up, Maximize AI's power!**
+### c_cpp_project_framework
+- **版权方**: Copyright (c) 2019- Neucrack (CZD666666@gmail.com)
+- **开源许可证**: MIT
+- **原始仓库**: https://github.com/neutree/c_cpp_project_framework
 
-<h3>
-    <a href="https://wiki.sipeed.com/maixcdk/doc/index.html"> Quick Start </a> |
-    <a href="https://wiki.sipeed.com/maixcdk/index.html"> Documentation </a> |
-    <a href="https://wiki.sipeed.com/maixcdk/api/index.html"> API </a> |
-    <a href="https://wiki.sipeed.com/maixcam-pro"> Hardware </a> |
-    <a href="https://maixhub.com/app"> APP Store </a>
-</h3>
+> **注意**: MaixCDK 可能包含其他子模块，各子模块的许可证信息请参见各子模块中的 LICENSE 文件。
 
-[![GitHub Repo stars](https://img.shields.io/github/stars/sipeed/MaixCDK?style=social)](https://github.com/sipeed/MaixCDK/stargazers)
-[![Apache 2.0](https://img.shields.io/badge/license-Apache%20v2.0-orange.svg)]("https://github.com/sipeed/MaixCDK/blob/main/LICENSE.md)
-![GitHub repo size](https://img.shields.io/github/repo-size/sipeed/MaixCDK) 
-[![Build MaixCAM](https://github.com/sipeed/MaixCDK/actions/workflows/build_maixcam.yml/badge.svg)](https://github.com/sipeed/MaixCDK/actions/workflows/build_maixcam.yml)
-[![Trigger wiki](https://github.com/sipeed/MaMaixCDKixPy/actions/workflows/trigger_wiki.yml/badge.svg)](https://github.com/sipeed/MaixCDK/actions/workflows/trigger_wiki.yml)
+## 许可证
 
-English | [中文](./README_ZH.md)
+### 本项目代码
 
-</div>
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+### 第三方组件许可证声明
 
-English | [中文](./README_ZH.md)
+本项目中包含以下第三方组件的代码（或依赖）：
 
-
-MaixCDK (Maix C/CPP Development Kit) is a C/C++ development kit that integrates practical functions such as AI, machine vision, and IoT, providing easy-to-use encapsulation for quickly building your own projects in vision, artificial intelligence, IoT, robotics, industrial cameras, and more.
-
-It is also the C/C++ version of [MaixPy](https://github.com/sipeed/MaixPy).
-
-## Features
-
-* Supports hardware-accelerated execution of AI models, including common classification, detection, and segmentation algorithms.
-* Supports common vision algorithms such as color block detection, QR code recognition, apriltag detection, line following, etc.
-* Supports OpenCV.
-* Provides interfaces for common peripheral operations (UART, I2C, SPI, GPIO, PWM, ADC, camera, display, etc.).
-* Cross-platform support, including Linux and Sipeed Maix series development boards (see table below for specifics).
-* Easy-to-use API with commonly used function examples.
-* Simple environment setup with one-click compilation.
-* Supports online debugging of programs.
-* Corresponding Python version (MaixPy) with automatically synchronized API updates.
-* Complete ecosystem including MaixCDK + MaixPy + MaixVision (code writing, real-time image viewing, etc.) + MaixHub (application store, sharing, communication, etc.).
-
-For more information, refer to the [MaixPy](https://github.com/sipeed/MaixPy) introduction and documentation.
-
-## Supported Devices
-
-| Device | Support Status |
-| ------ | -------------- |
-| [Sipeed MaixCAM](https://wiki.sipeed.com/maixcam) | Full |
-| [Sipeed MaixCAM-Pro](https://wiki.sipeed.com/maixcam-pro) | Full |
-| Common Linux | Partial |
-
-## Quick Start
-
-Click to view the [Quick Start](./docs/doc/README.md) document, which includes instructions on how to quickly download code, compile, and run.
-
-## MaixCDK Development Guidelines
-
-To help developers quickly understand MaixCDK and maintain the quality of long-term updates, please read the [MaixCDK Development Guidelines and Guidelines](./docs/doc/convention/README.md) before writing or contributing code.
-
-## More Documentation
-
-In addition to the development guidelines above, the documentation also includes application documents, development notes, and more for reference.
-
-Please visit [Sipeed Wiki](https://wiki.sipeed.com/maixcdk).
-
-The documents are written in `Markdown` format under the [docs](./docs) directory. You can directly view the `.md` files or generate a web version of the documentation using the [teedoc](https://github.com/teedoc/teedoc) tool.
-
-```shell
-pip install teedoc -U  # Install teedoc via pip
-cd docs                # Navigate to the docs directory
-teedoc install -i https://pypi.tuna.tsinghua.edu.cn/simple  # Install teedoc plugins according to the documentation
-teedoc serve           # Start a local web service to preview
-```
-
-Then, access the documentation via `http://127.0.0.1:2333` in your browser.
-
-> If you need to generate offline documentation, use the `teedoc build` command. The generated documents will be in the `out` directory. Use `python -m http.server` in the `out` directory to start a local web service for preview.
-
-## FAQ
-
-If you encounter any issues during compilation or usage, check the [FAQ](./docs/doc/faq.md) for potential solutions.
-
-## Open Source License
-
-MaixCDK is licensed under the Apache 2.0 open source license. See the [LICENSE](./LICENSE) file for details.
+#### MaixCDK - Apache 2.0
