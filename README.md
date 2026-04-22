@@ -13,7 +13,7 @@
 ### MaixCDK
 - **版权方**: Copyright (c) 2023- Sipeed Ltd.
 - **开源许可证**: Apache 2.0
-- **原始仓库**: [MaixCDK 官方仓库地址]
+- **原始仓库**: [[MaixCDK 官方仓库地址]](https://github.com/sipeed/MaixCDK)
 
 ### c_cpp_project_framework
 - **版权方**: Copyright (c) 2019- Neucrack (CZD666666@gmail.com)
